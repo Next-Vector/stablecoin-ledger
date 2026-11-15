@@ -1,0 +1,12 @@
+[package]
+name = "ledger-core"
+description = "Double-entry ledger core: accounts, assets, postings, holds and invariants (no I/O)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
