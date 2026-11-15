@@ -57,3 +57,12 @@ jobs:
 
       - name: Deny (licenses, bans, sources)
         run: cargo deny check licenses bans sources
+
+      - name: Git hook tests
+        run: ./scripts/test-hooks.sh
+
+      - name: Dependabot config
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet jsonschema==4.23.0 pyyaml==6.0.2
+          "$RUNNER_TEMP/venv/bin/python" scripts/check-dependabot.py
