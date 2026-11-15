@@ -5,6 +5,8 @@ Stablecoin Ledger is a double-entry ledger engine in Rust for custodial stableco
 | Document | Contents |
 |---|---|
 | [specification.md](specification.md) | Full MVP specification: scope, data model, functional (FR) and non-functional (NFR) requirements, architecture, REST API, database schema, acceptance criteria, stages, risks and accepted decisions |
+| [architecture.md](architecture.md) | How the services, the money model and the deposit, withdrawal, webhook and reconciliation flows fit together, with diagrams |
+| [tasks.md](tasks.md) | MVP task list: 9 milestones, 44 tasks with requirements and "done when" criteria |
 
 ## Key decisions at a glance
 
