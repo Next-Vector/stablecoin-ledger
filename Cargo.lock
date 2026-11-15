@@ -635,6 +635,7 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -645,6 +646,7 @@ version = "0.0.0"
 name = "ledger-store"
 version = "0.0.0"
 dependencies = [
+ "ledger-core",
  "sqlx",
  "tokio",
 ]

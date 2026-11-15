@@ -16,6 +16,7 @@ workspace = true
 integration = []
 
 [dependencies]
+ledger-core = { path = "../ledger-core" }
 sqlx.workspace = true
 
 [dev-dependencies]
@@ -23,4 +24,8 @@ tokio.workspace = true
 
 [[test]]
 name = "migrations"
+required-features = ["integration"]
+
+[[test]]
+name = "pg_store"
 required-features = ["integration"]

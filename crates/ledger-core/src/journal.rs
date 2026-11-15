@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     AccountAddress, AccountPattern, AssetId, Balance, BalanceError, Hold, Metadata, Transaction,
+    plan,
 };
 
 /// Monotonic transaction id assigned by the journal, starting at 1.
@@ -77,33 +78,15 @@ impl Journal {
     }
 
     fn record(&mut self, tx: Transaction, reverts: Option<TxId>) -> Result<TxId, ApplyError> {
-        let mut staged: HashMap<BalanceKey, Balance> = HashMap::new();
-        for posting in tx.postings() {
-            if self.frozen.contains(posting.source()) {
-                return Err(ApplyError::AccountFrozen(posting.source().clone()));
-            }
-            let source = (posting.source().clone(), posting.asset().clone());
-            let destination = (posting.destination().clone(), posting.asset().clone());
-            let debited = self
-                .staged_balance(&staged, &source)
-                .debit(posting.amount())?;
-            staged.insert(source, debited);
-            let credited = self
-                .staged_balance(&staged, &destination)
-                .credit(posting.amount())?;
-            staged.insert(destination, credited);
+        let changes = plan(
+            &tx,
+            |account, asset| self.balance(account, asset),
+            |account| self.frozen.contains(account),
+        )?;
+        for change in changes {
+            self.balances
+                .insert((change.account, change.asset), change.balance);
         }
-
-        if let Some(((account, asset), _)) = staged.iter().find(|((account, _), balance)| {
-            balance.is_negative() && !Self::allows_negative(account)
-        }) {
-            return Err(ApplyError::InsufficientFunds {
-                account: account.clone(),
-                asset: asset.clone(),
-            });
-        }
-
-        self.balances.extend(staged);
         self.transactions.push(Recorded {
             tx,
             reverts,
@@ -192,19 +175,6 @@ impl Journal {
 
     pub fn unfreeze(&mut self, account: &AccountAddress) {
         self.frozen.remove(account);
-    }
-
-    fn staged_balance(&self, staged: &HashMap<BalanceKey, Balance>, key: &BalanceKey) -> Balance {
-        staged
-            .get(key)
-            .copied()
-            .unwrap_or_else(|| self.balances.get(key).copied().unwrap_or_default())
-    }
-
-    /// Only `world` may go negative for now; system accounts with `allow_negative` come with
-    /// the features that need them (e.g. gas accounting).
-    fn allows_negative(account: &AccountAddress) -> bool {
-        account.is_world()
     }
 }
 
