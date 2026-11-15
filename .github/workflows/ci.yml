@@ -57,3 +57,6 @@ jobs:
 
       - name: Deny (licenses, bans, sources)
         run: cargo deny check licenses bans sources
+
+      - name: Git hook tests
+        run: ./scripts/test-hooks.sh
