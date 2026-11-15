@@ -33,3 +33,7 @@ required-features = ["integration"]
 [[test]]
 name = "concurrency"
 required-features = ["integration"]
+
+[[test]]
+name = "rebuild"
+required-features = ["integration"]

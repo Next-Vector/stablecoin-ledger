@@ -13,6 +13,43 @@ pub async fn migrate(pool: &PgPool) -> Result<(), MigrateError> {
     sqlx::migrate!("./migrations").run(pool).await
 }
 
+/// Recomputes every balance from the posting journal (NFR-08) and returns how many balance rows
+/// were wrong (changed, missing, or non-zero without any postings).
+///
+/// Runs in one DB transaction holding a lock that blocks concurrent `apply` calls (they write
+/// `balances` first), so the journal snapshot and the balances it is compared to stay consistent.
+pub async fn rebuild_balances(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let mut db = pool.begin().await?;
+    sqlx::query("LOCK TABLE balances IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *db)
+        .await?;
+    let (corrected,): (i64,) = sqlx::query_as(
+        "WITH totals AS ( \
+             SELECT account, asset, sum(delta) AS balance FROM ( \
+                 SELECT source AS account, asset, -amount AS delta FROM postings \
+                 UNION ALL \
+                 SELECT destination, asset, amount FROM postings \
+             ) AS movements GROUP BY account, asset \
+         ), expected AS ( \
+             SELECT coalesce(t.account, b.account) AS account, coalesce(t.asset, b.asset) AS asset, \
+                    coalesce(t.balance, 0) AS balance \
+             FROM totals AS t FULL JOIN balances AS b ON b.account = t.account AND b.asset = t.asset \
+         ), corrected AS ( \
+             INSERT INTO balances (account, asset, balance) \
+             SELECT e.account, e.asset, e.balance FROM expected AS e \
+             LEFT JOIN balances AS b ON b.account = e.account AND b.asset = e.asset \
+             WHERE b.account IS NULL OR b.balance <> e.balance \
+             ON CONFLICT (account, asset) \
+             DO UPDATE SET balance = EXCLUDED.balance, version = balances.version + 1 \
+             RETURNING 1 \
+         ) SELECT count(*) FROM corrected",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    db.commit().await?;
+    Ok(u64::try_from(corrected).unwrap_or_default())
+}
+
 /// Ledger store backed by PostgreSQL. Cheap to clone: it shares the connection pool.
 #[derive(Debug, Clone)]
 pub struct PgStore {
