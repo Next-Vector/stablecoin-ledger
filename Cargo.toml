@@ -22,3 +22,6 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[workspace.dependencies]
+thiserror = "2.0.21"
