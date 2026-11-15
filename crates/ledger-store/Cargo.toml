@@ -10,3 +10,17 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Integration tests need the run-integration PostgreSQL (see scripts/test-integration.sh).
+integration = []
+
+[dependencies]
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[[test]]
+name = "migrations"
+required-features = ["integration"]

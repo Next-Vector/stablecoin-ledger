@@ -47,7 +47,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Test
         run: cargo test --workspace --locked
@@ -55,8 +55,37 @@ jobs:
       - name: Audit (advisories)
         run: cargo audit
 
+      - name: Ignored advisories are unreachable
+        run: |
+          # .cargo/audit.toml ignores RUSTSEC-2026-0459 only because libsqlite3-sys is never compiled.
+          if [ -n "$(cargo tree --workspace --all-features --target all -i libsqlite3-sys 2>/dev/null)" ]; then
+            echo "libsqlite3-sys is now in the build graph: remove the ignore and fix RUSTSEC-2026-0459" >&2
+            exit 1
+          fi
+
       - name: Deny (licenses, bans, sources)
         run: cargo deny check licenses bans sources
+
+      - name: Start integration stack
+        run: ./run-integration up -d --wait
+
+      - name: Integration tests
+        run: ./scripts/test-integration.sh
+
+      # Diagnostics must run before teardown, or there is nothing left to inspect.
+      - name: Dump integration stack diagnostics
+        if: failure()
+        run: |
+          ./run-integration ps -a
+          for service in $(./run-integration config --services); do
+            echo "::group::logs: $service"
+            ./run-integration logs --no-color --timestamps --tail 200 "$service"
+            echo "::endgroup::"
+          done
+
+      - name: Stop integration stack
+        if: always()
+        run: ./run-integration down -v --remove-orphans
 
       - name: Git hook tests
         run: ./scripts/test-hooks.sh
