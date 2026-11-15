@@ -1,0 +1,7 @@
+/target
+/.git
+/.docker
+/docs
+/scripts
+/.env.local
+/.env.*.local

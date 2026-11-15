@@ -28,8 +28,38 @@ services:
       - traefik.http.services.stablecoin-ledger-anvil.loadbalancer.server.port=8545
     networks: [ledger, proxy]
 
+  ledger-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: dev
+    # Migrate first, then serve; both share the compiled target/ volume.
+    command: ["sh", "-c", "cargo run --locked -q -p ledger-api -- migrate && exec cargo run --locked -q -p ledger-api -- serve"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      BIND_ADDR: 0.0.0.0:8080
+      LOG_FORMAT: json
+    volumes:
+      - ../crates:/app/crates
+      - ../Cargo.toml:/app/Cargo.toml
+      - ../Cargo.lock:/app/Cargo.lock
+      - cargo-target:/app/target
+      - cargo-registry:/usr/local/cargo/registry
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.stablecoin-ledger-api.rule=Host(`api.stablecoin-ledger.localhost`)
+      - traefik.http.routers.stablecoin-ledger-api.entrypoints=web
+      - traefik.http.services.stablecoin-ledger-api.loadbalancer.server.port=8080
+    networks: [ledger, proxy]
+
 volumes:
   postgres-data:
+  cargo-target:
+  cargo-registry:
 
 networks:
   ledger:

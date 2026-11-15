@@ -44,13 +44,14 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 ## Dev stack
 
 ```sh
-./run-dev up -d                # PostgreSQL + anvil
+./run-dev up -d                # PostgreSQL + anvil + ledger-api (first start compiles, ~2 min)
 ./scripts/check-dev-stack.sh   # smoke check
 ./run-dev down                 # stop
 ```
 
 | Service | Address |
 |---|---|
+| ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/docs/`, spec at `/openapi.json` |
 | PostgreSQL 16 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
 | anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
 
