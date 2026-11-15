@@ -1,0 +1,24 @@
+#!/bin/sh
+# Pre-push gates: never push to main (production changes only through a reviewed PR),
+# then the supply-chain checks CI runs: cargo audit and cargo deny.
+set -e
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "pre-push: pushing to main is not allowed; open a pull request from dev instead" >&2
+    exit 1
+  fi
+done
+
+for tool in audit deny; do
+  if ! cargo "$tool" --version >/dev/null 2>&1; then
+    echo "pre-push: cargo-$tool is not installed; run: cargo install --locked cargo-$tool" >&2
+    exit 1
+  fi
+done
+
+echo "pre-push: cargo audit"
+cargo audit --quiet
+
+echo "pre-push: cargo deny"
+cargo deny --log-level error check licenses bans sources

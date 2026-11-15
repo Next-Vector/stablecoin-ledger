@@ -24,13 +24,22 @@ A double-entry ledger engine in Rust for custodial services that hold stablecoin
 git clone git@github.com:Next-Vector/stablecoin-ledger.git
 cd stablecoin-ledger
 
-# Enable the pre-commit hook (fmt, clippy, tests) once per clone
-git config core.hooksPath .githooks
-
-# Build and test
+# Build and test (the first build also enables the git hooks)
 cargo build --workspace
 cargo test --workspace
 ```
+
+### Git hooks
+
+The first local build sets `core.hooksPath=.githooks` for the clone (skipped in CI and when a hooks path is already set). To enable them by hand: `git config core.hooksPath .githooks`.
+
+| Hook | What it enforces |
+|---|---|
+| `pre-commit` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` |
+| `commit-msg` | Subject `type(scope): summary (#N)` ≤ 100 chars, at most one body paragraph, no `Co-Authored-By` trailer |
+| `pre-push` | No pushes to `main`; `cargo audit` and `cargo deny` (install with `cargo install --locked cargo-audit cargo-deny`) |
+
+`./scripts/test-hooks.sh` tests all hooks.
 
 ## Dev stack
 
