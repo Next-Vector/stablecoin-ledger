@@ -29,3 +29,7 @@ required-features = ["integration"]
 [[test]]
 name = "pg_store"
 required-features = ["integration"]
+
+[[test]]
+name = "concurrency"
+required-features = ["integration"]
