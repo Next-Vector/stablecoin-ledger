@@ -52,6 +52,9 @@ clone="$WORK/push"
 fresh_clone "$clone"
 git init -q --bare "$WORK/remote.git"
 git -C "$clone" remote set-url origin "$WORK/remote.git"
+# A parentless commit, so the push works even from a shallow CI checkout ("shallow update not allowed").
+git -C "$clone" checkout -q --orphan probe
+git -C "$clone" commit -q -m "chore: probe (#1)"
 git -C "$clone" config core.hooksPath .githooks
 
 if git -C "$clone" push -q origin HEAD:refs/heads/main >/dev/null 2>&1; then
