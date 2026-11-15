@@ -25,3 +25,4 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 thiserror = "2.0.21"
+proptest = "1.12.0"
