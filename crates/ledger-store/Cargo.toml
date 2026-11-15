@@ -18,6 +18,7 @@ integration = []
 [dependencies]
 ledger-core = { path = "../ledger-core" }
 sqlx.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
@@ -36,4 +37,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "rebuild"
+required-features = ["integration"]
+
+[[test]]
+name = "history"
 required-features = ["integration"]

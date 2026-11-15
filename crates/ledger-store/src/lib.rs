@@ -1,5 +1,9 @@
 //! PostgreSQL storage for the ledger journal and materialized balances.
 
+mod history;
+
+pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use ledger_core::{
@@ -238,6 +242,6 @@ impl LedgerStore for PgStore {
     }
 }
 
-fn backend(error: impl std::error::Error + Send + Sync + 'static) -> StoreError {
+pub(crate) fn backend(error: impl std::error::Error + Send + Sync + 'static) -> StoreError {
     StoreError::Backend(Box::new(error))
 }
