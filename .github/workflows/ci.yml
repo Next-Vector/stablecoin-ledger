@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_AUDIT_VERSION: 0.23.0
+  CARGO_DENY_VERSION: 0.20.2
+
+jobs:
+  checks:
+    # One ordered job: each step stops the pipeline on failure (fail-fast, cheapest first).
+    # TODO: switch back to [self-hosted, light] once that runner picks up jobs for this repo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          # Installs the version pinned in rust-toolchain.toml (persisted in ~/.rustup on the runner).
+          rustup toolchain install
+          rustc --version
+
+      # Prebuilt binaries: hosted runners keep nothing between runs, so `cargo install` would rebuild every time.
+      - name: Install cargo-audit and cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }},cargo-deny@${{ env.CARGO_DENY_VERSION }}
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Audit (advisories)
+        run: cargo audit
+
+      - name: Deny (licenses, bans, sources)
+        run: cargo deny check licenses bans sources

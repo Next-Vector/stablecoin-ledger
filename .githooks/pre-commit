@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pre-commit gates, mirroring CI: format → lint → unit tests.
+# Enable once per clone: git config core.hooksPath .githooks
+# Heavier suites (integration, e2e) run in CI only.
+set -e
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --all --check
+
+echo "pre-commit: cargo clippy"
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+
+echo "pre-commit: cargo test"
+cargo test --workspace --locked --quiet
