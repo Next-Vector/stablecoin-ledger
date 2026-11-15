@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    AccountAddress, AccountPattern, AssetId, Balance, BalanceError, Metadata, Transaction,
+    AccountAddress, AccountPattern, AssetId, Balance, BalanceError, Hold, Metadata, Transaction,
 };
 
 /// Monotonic transaction id assigned by the journal, starting at 1.
@@ -52,6 +52,7 @@ pub struct Journal {
     balances: HashMap<BalanceKey, Balance>,
     frozen: HashSet<AccountAddress>,
     transactions: Vec<Recorded>,
+    pub(crate) holds: Vec<Hold>,
 }
 
 impl Journal {

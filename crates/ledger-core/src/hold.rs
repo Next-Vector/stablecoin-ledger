@@ -1,0 +1,427 @@
+//! Holds: reserve funds, then capture (fully or partially) or void them. Every hold action is an
+//! ordinary journal transaction through the technical account `holds:{id}`, so the zero-sum
+//! invariant holds. Time is passed in explicitly (Unix seconds) to keep the core deterministic.
+
+use crate::{
+    AccountAddress, ApplyError, AssetId, Journal, Metadata, Posting, PostingError, Transaction,
+    TxId,
+};
+
+/// Hold id assigned by the journal, starting at 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HoldId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldStatus {
+    Active,
+    Captured,
+    Voided,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hold {
+    owner: AccountAddress,
+    account: AccountAddress,
+    asset: AssetId,
+    amount: u128,
+    status: HoldStatus,
+    expires_at: Option<u64>,
+}
+
+impl Hold {
+    /// The account the funds were reserved from and return to.
+    pub fn owner(&self) -> &AccountAddress {
+        &self.owner
+    }
+
+    /// The technical account `holds:{id}` holding the reserved funds.
+    pub fn account(&self) -> &AccountAddress {
+        &self.account
+    }
+
+    pub fn asset(&self) -> &AssetId {
+        &self.asset
+    }
+
+    pub fn amount(&self) -> u128 {
+        self.amount
+    }
+
+    pub fn status(&self) -> HoldStatus {
+        self.status
+    }
+
+    /// Unix seconds after which the hold expires, if any.
+    pub fn expires_at(&self) -> Option<u64> {
+        self.expires_at
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HoldError {
+    #[error("hold {0:?} does not exist")]
+    NotFound(HoldId),
+    #[error("hold {0:?} is {1:?}, not active")]
+    NotActive(HoldId, HoldStatus),
+    #[error("hold amount must be greater than zero")]
+    ZeroAmount,
+    #[error("capture of {requested} exceeds the held {held}")]
+    ExceedsHold { requested: u128, held: u128 },
+    #[error("invalid posting: {0}")]
+    Posting(#[from] PostingError),
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+}
+
+impl Journal {
+    /// Reserves `amount` of `asset` from `owner` until captured, voided or expired.
+    pub fn hold(
+        &mut self,
+        owner: AccountAddress,
+        amount: u128,
+        asset: AssetId,
+        expires_at: Option<u64>,
+        metadata: Metadata,
+    ) -> Result<HoldId, HoldError> {
+        if amount == 0 {
+            return Err(HoldError::ZeroAmount);
+        }
+        let id = HoldId(self.holds.len() as u64 + 1);
+        let account: AccountAddress = format!("holds:{}", id.0)
+            .parse()
+            .expect("holds:{id} is a valid account address");
+        let posting = Posting::new(owner.clone(), account.clone(), amount, asset.clone())?;
+        self.apply(single(posting, metadata))?;
+        self.holds.push(Hold {
+            owner,
+            account,
+            asset,
+            amount,
+            status: HoldStatus::Active,
+            expires_at,
+        });
+        Ok(id)
+    }
+
+    /// Sends `amount` (≤ the held amount) to `destination` and returns the rest to the owner,
+    /// in one transaction. A hold is captured at most once.
+    pub fn capture(
+        &mut self,
+        id: HoldId,
+        destination: AccountAddress,
+        amount: u128,
+        metadata: Metadata,
+    ) -> Result<TxId, HoldError> {
+        let hold = self.active_hold(id)?;
+        if amount == 0 {
+            return Err(HoldError::ZeroAmount);
+        }
+        if amount > hold.amount {
+            return Err(HoldError::ExceedsHold {
+                requested: amount,
+                held: hold.amount,
+            });
+        }
+        let mut postings = vec![Posting::new(
+            hold.account.clone(),
+            destination,
+            amount,
+            hold.asset.clone(),
+        )?];
+        if amount < hold.amount {
+            postings.push(Posting::new(
+                hold.account.clone(),
+                hold.owner.clone(),
+                hold.amount - amount,
+                hold.asset.clone(),
+            )?);
+        }
+        let tx = Transaction::new(postings, metadata).expect("one or two postings");
+        let tx_id = self.apply(tx)?;
+        self.set_status(id, HoldStatus::Captured);
+        Ok(tx_id)
+    }
+
+    /// Returns the whole held amount to the owner.
+    pub fn void(&mut self, id: HoldId, metadata: Metadata) -> Result<TxId, HoldError> {
+        self.release(id, HoldStatus::Voided, metadata)
+    }
+
+    /// Voids every active hold whose deadline is at or before `now` (Unix seconds) and returns
+    /// their ids. Each expiry is its own transaction; on error, earlier expiries stay applied.
+    pub fn expire(&mut self, now: u64) -> Result<Vec<HoldId>, HoldError> {
+        let due: Vec<HoldId> = self
+            .holds
+            .iter()
+            .enumerate()
+            .filter(|(_, hold)| {
+                hold.status == HoldStatus::Active && hold.expires_at.is_some_and(|at| at <= now)
+            })
+            .map(|(index, _)| HoldId(index as u64 + 1))
+            .collect();
+        for &id in &due {
+            self.release(id, HoldStatus::Expired, Metadata::new())?;
+        }
+        Ok(due)
+    }
+
+    pub fn get_hold(&self, id: HoldId) -> Option<&Hold> {
+        self.holds.get(Self::hold_index(id)?)
+    }
+
+    fn release(
+        &mut self,
+        id: HoldId,
+        status: HoldStatus,
+        metadata: Metadata,
+    ) -> Result<TxId, HoldError> {
+        let hold = self.active_hold(id)?;
+        let posting = Posting::new(
+            hold.account.clone(),
+            hold.owner.clone(),
+            hold.amount,
+            hold.asset.clone(),
+        )?;
+        let tx_id = self.apply(single(posting, metadata))?;
+        self.set_status(id, status);
+        Ok(tx_id)
+    }
+
+    fn active_hold(&self, id: HoldId) -> Result<Hold, HoldError> {
+        let hold = self.get_hold(id).ok_or(HoldError::NotFound(id))?;
+        if hold.status != HoldStatus::Active {
+            return Err(HoldError::NotActive(id, hold.status));
+        }
+        Ok(hold.clone())
+    }
+
+    fn set_status(&mut self, id: HoldId, status: HoldStatus) {
+        if let Some(hold) = Self::hold_index(id).and_then(|index| self.holds.get_mut(index)) {
+            hold.status = status;
+        }
+    }
+
+    fn hold_index(id: HoldId) -> Option<usize> {
+        usize::try_from(id.0).ok()?.checked_sub(1)
+    }
+}
+
+fn single(posting: Posting, metadata: Metadata) -> Transaction {
+    Transaction::new(vec![posting], metadata).expect("a single posting is a valid transaction")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Balance;
+
+    fn account(raw: &str) -> AccountAddress {
+        raw.parse().unwrap()
+    }
+
+    fn usdc() -> AssetId {
+        "USDC@ethereum/6".parse().unwrap()
+    }
+
+    fn amount(value: u128) -> Balance {
+        Balance::ZERO.credit(value).unwrap()
+    }
+
+    /// Journal with users:1:wallet funded with 100 USDC.
+    fn funded() -> Journal {
+        let mut journal = Journal::default();
+        let funding = Posting::new(
+            AccountAddress::world(),
+            account("users:1:wallet"),
+            100,
+            usdc(),
+        )
+        .unwrap();
+        journal
+            .apply(Transaction::new(vec![funding], Metadata::new()).unwrap())
+            .unwrap();
+        journal
+    }
+
+    fn balance(journal: &Journal, raw: &str) -> Balance {
+        journal.balance(&account(raw), &usdc())
+    }
+
+    #[test]
+    fn hold_moves_funds_to_the_hold_account() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+
+        let hold = journal.get_hold(id).unwrap();
+        assert_eq!(hold.owner(), &account("users:1:wallet"));
+        assert_eq!(hold.amount(), 30);
+        assert_eq!(hold.status(), HoldStatus::Active);
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(70));
+        assert_eq!(journal.balance(hold.account(), &usdc()), amount(30));
+        assert_eq!(hold.account().as_str(), format!("holds:{}", id.0));
+    }
+
+    #[test]
+    fn hold_follows_the_usual_rules() {
+        let mut journal = funded();
+        assert_eq!(
+            journal.hold(
+                account("users:1:wallet"),
+                101,
+                usdc(),
+                None,
+                Metadata::new()
+            ),
+            Err(HoldError::Apply(ApplyError::InsufficientFunds {
+                account: account("users:1:wallet"),
+                asset: usdc()
+            }))
+        );
+        assert_eq!(
+            journal.hold(account("users:1:wallet"), 0, usdc(), None, Metadata::new()),
+            Err(HoldError::ZeroAmount)
+        );
+    }
+
+    #[test]
+    fn full_capture_spends_the_whole_hold() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        journal
+            .capture(id, account("merchants:7:wallet"), 30, Metadata::new())
+            .unwrap();
+
+        assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Captured);
+        assert_eq!(balance(&journal, "merchants:7:wallet"), amount(30));
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(70));
+        assert_eq!(
+            journal.balance(journal.get_hold(id).unwrap().account(), &usdc()),
+            Balance::ZERO
+        );
+    }
+
+    #[test]
+    fn partial_capture_returns_the_remainder_to_the_owner_in_one_transaction() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        let tx = journal
+            .capture(id, account("merchants:7:wallet"), 20, Metadata::new())
+            .unwrap();
+
+        assert_eq!(journal.transaction(tx).unwrap().postings().len(), 2);
+        assert_eq!(balance(&journal, "merchants:7:wallet"), amount(20));
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(80));
+        assert_eq!(
+            journal.balance(journal.get_hold(id).unwrap().account(), &usdc()),
+            Balance::ZERO
+        );
+    }
+
+    #[test]
+    fn capture_cannot_exceed_the_hold() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        assert_eq!(
+            journal.capture(id, account("merchants:7:wallet"), 31, Metadata::new()),
+            Err(HoldError::ExceedsHold {
+                requested: 31,
+                held: 30
+            })
+        );
+        assert_eq!(
+            journal.capture(id, account("merchants:7:wallet"), 0, Metadata::new()),
+            Err(HoldError::ZeroAmount)
+        );
+        assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Active);
+    }
+
+    #[test]
+    fn void_returns_everything_to_the_owner() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        journal.void(id, Metadata::new()).unwrap();
+
+        assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Voided);
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(100));
+    }
+
+    #[test]
+    fn a_settled_hold_cannot_be_captured_or_voided_again() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        journal.void(id, Metadata::new()).unwrap();
+        assert_eq!(
+            journal.void(id, Metadata::new()),
+            Err(HoldError::NotActive(id, HoldStatus::Voided))
+        );
+        assert_eq!(
+            journal.capture(id, account("merchants:7:wallet"), 1, Metadata::new()),
+            Err(HoldError::NotActive(id, HoldStatus::Voided))
+        );
+    }
+
+    #[test]
+    fn unknown_hold_is_not_found() {
+        let mut journal = funded();
+        assert_eq!(
+            journal.void(HoldId(9), Metadata::new()),
+            Err(HoldError::NotFound(HoldId(9)))
+        );
+    }
+
+    #[test]
+    fn expire_voids_only_holds_past_their_deadline() {
+        let mut journal = funded();
+        let due = journal
+            .hold(
+                account("users:1:wallet"),
+                10,
+                usdc(),
+                Some(1_000),
+                Metadata::new(),
+            )
+            .unwrap();
+        let later = journal
+            .hold(
+                account("users:1:wallet"),
+                20,
+                usdc(),
+                Some(2_000),
+                Metadata::new(),
+            )
+            .unwrap();
+        let open_ended = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+
+        assert_eq!(journal.expire(999), Ok(vec![]));
+        assert_eq!(journal.expire(1_000), Ok(vec![due]));
+
+        assert_eq!(journal.get_hold(due).unwrap().status(), HoldStatus::Expired);
+        assert_eq!(
+            journal.get_hold(later).unwrap().status(),
+            HoldStatus::Active
+        );
+        assert_eq!(
+            journal.get_hold(open_ended).unwrap().status(),
+            HoldStatus::Active
+        );
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(50));
+
+        // An expired hold is not expired twice.
+        assert_eq!(journal.expire(5_000), Ok(vec![later]));
+    }
+}
