@@ -8,7 +8,7 @@ echo "pre-commit: cargo fmt --check"
 cargo fmt --all --check
 
 echo "pre-commit: cargo clippy"
-cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked --quiet -- -D warnings
 
 echo "pre-commit: cargo test"
 cargo test --workspace --locked --quiet

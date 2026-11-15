@@ -10,3 +10,16 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Integration tests need the run-integration PostgreSQL (see scripts/test-integration.sh).
+integration = []
+
+[dependencies]
+ledger-store = { path = "../ledger-store" }
+sqlx.workspace = true
+tokio.workspace = true
+
+[[test]]
+name = "rebuild_cli"
+required-features = ["integration"]

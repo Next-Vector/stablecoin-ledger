@@ -10,3 +10,35 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Integration tests need the run-integration PostgreSQL (see scripts/test-integration.sh).
+integration = []
+
+[dependencies]
+ledger-core = { path = "../ledger-core" }
+sqlx.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[[test]]
+name = "migrations"
+required-features = ["integration"]
+
+[[test]]
+name = "pg_store"
+required-features = ["integration"]
+
+[[test]]
+name = "concurrency"
+required-features = ["integration"]
+
+[[test]]
+name = "rebuild"
+required-features = ["integration"]
+
+[[test]]
+name = "history"
+required-features = ["integration"]

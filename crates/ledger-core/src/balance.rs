@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::str::FromStr;
 
 /// Signed account balance in base units, covering ±`u128::MAX`.
 ///
@@ -16,6 +17,10 @@ pub enum BalanceError {
     #[error("balance overflow")]
     Overflow,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("balance must be an optionally negative integer within ±u128::MAX")]
+pub struct ParseBalanceError;
 
 impl Balance {
     pub const ZERO: Self = Self {
@@ -84,6 +89,23 @@ impl Ord for Balance {
 impl PartialOrd for Balance {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl FromStr for Balance {
+    type Err = ParseBalanceError;
+
+    /// Parses the [`Display`](fmt::Display) form: digits with an optional leading `-`.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let (negative, digits) = match raw.strip_prefix('-') {
+            Some(digits) => (true, digits),
+            None => (false, raw),
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ParseBalanceError);
+        }
+        let magnitude: u128 = digits.parse().map_err(|_| ParseBalanceError)?;
+        Ok(Self::signed(negative, magnitude))
     }
 }
 
@@ -160,6 +182,39 @@ mod tests {
             max.checked_add(minus_eight),
             Ok(Balance::ZERO.credit(u128::MAX - 8).unwrap())
         );
+    }
+
+    #[test]
+    fn parses_its_own_display_form() {
+        for value in [
+            "0",
+            "15",
+            "-15",
+            &u128::MAX.to_string(),
+            &format!("-{}", u128::MAX),
+        ] {
+            assert_eq!(value.parse::<Balance>().unwrap().to_string(), value);
+        }
+        assert_eq!("-0".parse::<Balance>(), Ok(Balance::ZERO));
+    }
+
+    #[test]
+    fn rejects_malformed_balances() {
+        for value in [
+            "",
+            "-",
+            "+5",
+            "1.5",
+            "abc",
+            " 5",
+            &format!("{}0", u128::MAX),
+        ] {
+            assert_eq!(
+                value.parse::<Balance>(),
+                Err(ParseBalanceError),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
