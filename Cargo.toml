@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ledger-core",
+    "crates/ledger-script",
+    "crates/ledger-store",
+    "crates/ledger-api",
+    "crates/chain-watcher",
+    "crates/withdrawer",
+    "crates/reconciler",
+    "crates/signer-proto",
+    "crates/signer-local",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "BUSL-1.1"
+repository = "https://github.com/Next-Vector/stablecoin-ledger"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

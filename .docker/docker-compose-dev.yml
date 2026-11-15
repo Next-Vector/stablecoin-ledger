@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16.16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_HOST_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [ledger]
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.9.0
+    entrypoint: ["anvil"]
+    command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "${ANVIL_CHAIN_ID}"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.stablecoin-ledger-anvil.rule=Host(`anvil.stablecoin-ledger.localhost`)
+      - traefik.http.routers.stablecoin-ledger-anvil.entrypoints=web
+      - traefik.http.services.stablecoin-ledger-anvil.loadbalancer.server.port=8545
+    networks: [ledger, proxy]
+
+volumes:
+  postgres-data:
+
+networks:
+  ledger:
+  proxy:
+    external: true
