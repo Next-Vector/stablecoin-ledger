@@ -41,6 +41,11 @@ impl Balance {
         self.shift(amount, true)
     }
 
+    /// Adds two signed balances.
+    pub fn checked_add(self, other: Self) -> Result<Self, BalanceError> {
+        self.shift(other.magnitude, other.negative)
+    }
+
     /// Moves the balance by `amount` towards negative (`down`) or positive.
     fn shift(self, amount: u128, down: bool) -> Result<Self, BalanceError> {
         if self.is_zero() || self.negative == down {
@@ -135,6 +140,26 @@ mod tests {
         assert_eq!(max.credit(1), Err(BalanceError::Overflow));
         let min = Balance::ZERO.debit(u128::MAX).unwrap();
         assert_eq!(min.debit(1), Err(BalanceError::Overflow));
+    }
+
+    #[test]
+    fn adds_signed_balances_with_overflow_check() {
+        let five = Balance::ZERO.credit(5).unwrap();
+        let minus_eight = Balance::ZERO.debit(8).unwrap();
+        assert_eq!(
+            five.checked_add(minus_eight),
+            Ok(Balance::ZERO.debit(3).unwrap())
+        );
+        assert_eq!(
+            minus_eight.checked_add(minus_eight),
+            Ok(Balance::ZERO.debit(16).unwrap())
+        );
+        let max = Balance::ZERO.credit(u128::MAX).unwrap();
+        assert_eq!(max.checked_add(five), Err(BalanceError::Overflow));
+        assert_eq!(
+            max.checked_add(minus_eight),
+            Ok(Balance::ZERO.credit(u128::MAX - 8).unwrap())
+        );
     }
 
     #[test]

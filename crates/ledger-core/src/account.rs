@@ -43,25 +43,65 @@ impl FromStr for AccountAddress {
     type Err = AccountAddressError;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        if raw.is_empty() {
-            return Err(AccountAddressError::Empty);
-        }
-        if raw.len() > Self::MAX_LEN {
-            return Err(AccountAddressError::TooLong { len: raw.len() });
-        }
-        for segment in raw.split(':') {
-            if segment.is_empty() {
-                return Err(AccountAddressError::EmptySegment);
-            }
-            if let Some(ch) = segment
-                .chars()
-                .find(|ch| !matches!(ch, 'a'..='z' | '0'..='9' | '_'))
-            {
-                return Err(AccountAddressError::InvalidChar(ch));
-            }
-        }
+        validate(raw, false)?;
         Ok(Self(raw.to_owned()))
     }
+}
+
+/// An account address pattern where a `*` segment matches exactly one segment,
+/// e.g. `users:*:wallet` matches `users:42:wallet` but not `users:42:pending`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountPattern(String);
+
+impl AccountPattern {
+    const WILDCARD: &'static str = "*";
+
+    pub fn matches(&self, address: &AccountAddress) -> bool {
+        let mut pattern = self.0.split(':');
+        let mut segments = address.as_str().split(':');
+        loop {
+            match (pattern.next(), segments.next()) {
+                (None, None) => return true,
+                (Some(expected), Some(actual))
+                    if expected == Self::WILDCARD || expected == actual => {}
+                _ => return false,
+            }
+        }
+    }
+}
+
+impl FromStr for AccountPattern {
+    type Err = AccountAddressError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        validate(raw, true)?;
+        Ok(Self(raw.to_owned()))
+    }
+}
+
+/// Validates an address; with `wildcards`, a segment may also be exactly `*`.
+fn validate(raw: &str, wildcards: bool) -> Result<(), AccountAddressError> {
+    if raw.is_empty() {
+        return Err(AccountAddressError::Empty);
+    }
+    if raw.len() > AccountAddress::MAX_LEN {
+        return Err(AccountAddressError::TooLong { len: raw.len() });
+    }
+    for segment in raw.split(':') {
+        if segment.is_empty() {
+            return Err(AccountAddressError::EmptySegment);
+        }
+        if wildcards && segment == AccountPattern::WILDCARD {
+            continue;
+        }
+        if let Some(ch) = segment
+            .chars()
+            .find(|ch| !matches!(ch, 'a'..='z' | '0'..='9' | '_'))
+        {
+            return Err(AccountAddressError::InvalidChar(ch));
+        }
+    }
+    Ok(())
 }
 
 impl fmt::Display for AccountAddress {
@@ -140,6 +180,45 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+
+    #[test]
+    fn pattern_wildcard_matches_exactly_one_segment() {
+        let pattern: AccountPattern = "users:*:wallet".parse().unwrap();
+        let matches = |raw: &str| pattern.matches(&raw.parse::<AccountAddress>().unwrap());
+        assert!(matches("users:1:wallet"));
+        assert!(matches("users:abc_2:wallet"));
+        assert!(!matches("users:1:pending"));
+        assert!(!matches("users:1:2:wallet"));
+        assert!(!matches("users:wallet"));
+        assert!(!matches("merchants:1:wallet"));
+    }
+
+    #[test]
+    fn pattern_without_wildcards_matches_only_itself() {
+        let pattern: AccountPattern = "platform:fees".parse().unwrap();
+        assert!(pattern.matches(&"platform:fees".parse().unwrap()));
+        assert!(!pattern.matches(&"platform:fees:x".parse().unwrap()));
+    }
+
+    #[test]
+    fn pattern_rejects_invalid_input() {
+        assert_eq!(
+            "".parse::<AccountPattern>(),
+            Err(AccountAddressError::Empty)
+        );
+        assert_eq!(
+            "users::wallet".parse::<AccountPattern>(),
+            Err(AccountAddressError::EmptySegment)
+        );
+        assert_eq!(
+            "users:a*:wallet".parse::<AccountPattern>(),
+            Err(AccountAddressError::InvalidChar('*'))
+        );
+        assert_eq!(
+            "Users:*".parse::<AccountPattern>(),
+            Err(AccountAddressError::InvalidChar('U'))
+        );
     }
 
     #[test]

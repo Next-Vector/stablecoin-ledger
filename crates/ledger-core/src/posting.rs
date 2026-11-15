@@ -54,6 +54,16 @@ impl Posting {
     pub fn asset(&self) -> &AssetId {
         &self.asset
     }
+
+    /// The same movement in the opposite direction.
+    pub(crate) fn mirrored(&self) -> Self {
+        Self {
+            source: self.destination.clone(),
+            destination: self.source.clone(),
+            amount: self.amount,
+            asset: self.asset.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

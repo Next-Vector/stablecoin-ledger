@@ -7,9 +7,9 @@ mod journal;
 mod posting;
 mod transaction;
 
-pub use account::{AccountAddress, AccountAddressError};
+pub use account::{AccountAddress, AccountAddressError, AccountPattern};
 pub use asset::{AssetId, AssetIdError};
 pub use balance::{Balance, BalanceError};
-pub use journal::{ApplyError, Journal, TxId};
+pub use journal::{ApplyError, Journal, RevertError, TxId};
 pub use posting::{Posting, PostingError};
 pub use transaction::{Metadata, Transaction, TransactionError};

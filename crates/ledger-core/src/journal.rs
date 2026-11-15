@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{AccountAddress, AssetId, Balance, BalanceError, Transaction};
+use crate::{
+    AccountAddress, AccountPattern, AssetId, Balance, BalanceError, Metadata, Transaction,
+};
 
 /// Monotonic transaction id assigned by the journal, starting at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -25,19 +27,55 @@ impl From<BalanceError> for ApplyError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RevertError {
+    #[error("transaction {0:?} does not exist")]
+    NotFound(TxId),
+    #[error("transaction {0:?} has already been reverted")]
+    AlreadyReverted(TxId),
+    #[error(transparent)]
+    Apply(#[from] ApplyError),
+}
+
 type BalanceKey = (AccountAddress, AssetId);
+
+#[derive(Debug)]
+struct Recorded {
+    tx: Transaction,
+    reverts: Option<TxId>,
+    reverted_by: Option<TxId>,
+}
 
 /// In-memory double-entry journal: applies transactions atomically and keeps balances.
 #[derive(Debug, Default)]
 pub struct Journal {
     balances: HashMap<BalanceKey, Balance>,
     frozen: HashSet<AccountAddress>,
-    transactions: Vec<Transaction>,
+    transactions: Vec<Recorded>,
 }
 
 impl Journal {
     /// Applies all postings of `tx` or none of them, and returns the id assigned to it.
     pub fn apply(&mut self, tx: Transaction) -> Result<TxId, ApplyError> {
+        self.record(tx, None)
+    }
+
+    /// Reverses transaction `id` with a new transaction of mirrored postings. A transaction can be
+    /// reverted once; the reversal follows the usual rules (funds, frozen accounts, overflow).
+    pub fn revert(&mut self, id: TxId, metadata: Metadata) -> Result<TxId, RevertError> {
+        let original = self.recorded(id).ok_or(RevertError::NotFound(id))?;
+        if original.reverted_by.is_some() {
+            return Err(RevertError::AlreadyReverted(id));
+        }
+        let reversal = original.tx.reversed(metadata);
+        let reversal_id = self.record(reversal, Some(id))?;
+        if let Some(original) = self.recorded_mut(id) {
+            original.reverted_by = Some(reversal_id);
+        }
+        Ok(reversal_id)
+    }
+
+    fn record(&mut self, tx: Transaction, reverts: Option<TxId>) -> Result<TxId, ApplyError> {
         let mut staged: HashMap<BalanceKey, Balance> = HashMap::new();
         for posting in tx.postings() {
             if self.frozen.contains(posting.source()) {
@@ -65,7 +103,11 @@ impl Journal {
         }
 
         self.balances.extend(staged);
-        self.transactions.push(tx);
+        self.transactions.push(Recorded {
+            tx,
+            reverts,
+            reverted_by: None,
+        });
         Ok(TxId(self.transactions.len() as u64))
     }
 
@@ -76,9 +118,70 @@ impl Journal {
             .unwrap_or_default()
     }
 
+    /// Balance of `account` right after transaction `at` was applied; `None` if `at` does not exist.
+    pub fn balance_at(
+        &self,
+        account: &AccountAddress,
+        asset: &AssetId,
+        at: TxId,
+    ) -> Option<Balance> {
+        let count = Self::index(at)? + 1;
+        let history = self.transactions.get(..count)?;
+        let mut balance = Balance::ZERO;
+        let postings = history
+            .iter()
+            .flat_map(|recorded| recorded.tx.postings())
+            .filter(|posting| posting.asset() == asset);
+        for posting in postings {
+            // Replays postings in the order `apply` checked them, so overflow cannot occur here.
+            if posting.source() == account {
+                balance = balance.debit(posting.amount()).ok()?;
+            }
+            if posting.destination() == account {
+                balance = balance.credit(posting.amount()).ok()?;
+            }
+        }
+        Some(balance)
+    }
+
+    /// Sum of the current balances of all accounts matching `pattern` in `asset`.
+    pub fn aggregate_balance(
+        &self,
+        pattern: &AccountPattern,
+        asset: &AssetId,
+    ) -> Result<Balance, BalanceError> {
+        self.balances
+            .iter()
+            .filter(|((account, balance_asset), _)| {
+                balance_asset == asset && pattern.matches(account)
+            })
+            .try_fold(Balance::ZERO, |sum, (_, balance)| sum.checked_add(*balance))
+    }
+
     pub fn transaction(&self, id: TxId) -> Option<&Transaction> {
-        let index = usize::try_from(id.0).ok()?.checked_sub(1)?;
-        self.transactions.get(index)
+        self.recorded(id).map(|recorded| &recorded.tx)
+    }
+
+    /// The transaction that `id` reverses, if `id` is a reversal.
+    pub fn reverts(&self, id: TxId) -> Option<TxId> {
+        self.recorded(id)?.reverts
+    }
+
+    /// The reversal of `id`, if it has been reverted.
+    pub fn reverted_by(&self, id: TxId) -> Option<TxId> {
+        self.recorded(id)?.reverted_by
+    }
+
+    fn recorded(&self, id: TxId) -> Option<&Recorded> {
+        self.transactions.get(Self::index(id)?)
+    }
+
+    fn recorded_mut(&mut self, id: TxId) -> Option<&mut Recorded> {
+        self.transactions.get_mut(Self::index(id)?)
+    }
+
+    fn index(id: TxId) -> Option<usize> {
+        usize::try_from(id.0).ok()?.checked_sub(1)
     }
 
     /// A frozen account cannot be a posting source; it can still receive.
@@ -107,7 +210,7 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Metadata, Posting};
+    use crate::Posting;
 
     fn account(raw: &str) -> AccountAddress {
         raw.parse().unwrap()
@@ -342,6 +445,172 @@ mod tests {
                     usdc()
                 )]))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn revert_applies_mirrored_postings_and_links_both_transactions() {
+        let mut journal = funded(100);
+        let payment = journal
+            .apply(tx(vec![
+                posting("users:1:wallet", "merchants:7:wallet", 99, usdc()),
+                posting("users:1:wallet", "platform:fees", 1, usdc()),
+            ]))
+            .unwrap();
+        let reversal = journal.revert(payment, Metadata::new()).unwrap();
+
+        assert_eq!(
+            journal.balance(&account("users:1:wallet"), &usdc()),
+            balance(100)
+        );
+        assert_eq!(
+            journal.balance(&account("merchants:7:wallet"), &usdc()),
+            Balance::ZERO
+        );
+        assert_eq!(
+            journal.balance(&account("platform:fees"), &usdc()),
+            Balance::ZERO
+        );
+        let mirrored = journal.transaction(reversal).unwrap().postings();
+        assert_eq!(
+            mirrored[0],
+            posting("merchants:7:wallet", "users:1:wallet", 99, usdc())
+        );
+        assert_eq!(
+            mirrored[1],
+            posting("platform:fees", "users:1:wallet", 1, usdc())
+        );
+        assert_eq!(journal.reverts(reversal), Some(payment));
+        assert_eq!(journal.reverted_by(payment), Some(reversal));
+        assert_eq!(journal.reverts(payment), None);
+    }
+
+    #[test]
+    fn a_transaction_can_be_reverted_only_once() {
+        let mut journal = funded(100);
+        let id = journal
+            .apply(tx(vec![posting(
+                "users:1:wallet",
+                "users:2:wallet",
+                10,
+                usdc(),
+            )]))
+            .unwrap();
+        journal.revert(id, Metadata::new()).unwrap();
+        assert_eq!(
+            journal.revert(id, Metadata::new()),
+            Err(RevertError::AlreadyReverted(id))
+        );
+    }
+
+    #[test]
+    fn reverting_an_unknown_transaction_fails() {
+        let mut journal = funded(100);
+        assert_eq!(
+            journal.revert(TxId(42), Metadata::new()),
+            Err(RevertError::NotFound(TxId(42)))
+        );
+    }
+
+    #[test]
+    fn revert_follows_the_usual_rules_and_leaves_no_trace_on_failure() {
+        let mut journal = funded(100);
+        let id = journal
+            .apply(tx(vec![posting(
+                "users:1:wallet",
+                "users:2:wallet",
+                10,
+                usdc(),
+            )]))
+            .unwrap();
+        // users:2 has already spent the money, so the reversal cannot take it back.
+        journal
+            .apply(tx(vec![posting(
+                "users:2:wallet",
+                "users:3:wallet",
+                10,
+                usdc(),
+            )]))
+            .unwrap();
+        assert_eq!(
+            journal.revert(id, Metadata::new()),
+            Err(RevertError::Apply(ApplyError::InsufficientFunds {
+                account: account("users:2:wallet"),
+                asset: usdc()
+            }))
+        );
+        assert_eq!(journal.reverted_by(id), None);
+        assert_eq!(
+            journal.balance(&account("users:1:wallet"), &usdc()),
+            balance(90)
+        );
+    }
+
+    #[test]
+    fn balance_at_replays_history_up_to_a_transaction() {
+        let mut journal = Journal::default();
+        let first = journal
+            .apply(tx(vec![posting("world", "users:1:wallet", 100, usdc())]))
+            .unwrap();
+        let second = journal
+            .apply(tx(vec![posting(
+                "users:1:wallet",
+                "users:2:wallet",
+                30,
+                usdc(),
+            )]))
+            .unwrap();
+        journal
+            .apply(tx(vec![posting("world", "users:1:wallet", 5, dai())]))
+            .unwrap();
+
+        let user = account("users:1:wallet");
+        assert_eq!(
+            journal.balance_at(&user, &usdc(), first),
+            Some(balance(100))
+        );
+        assert_eq!(
+            journal.balance_at(&user, &usdc(), second),
+            Some(balance(70))
+        );
+        assert_eq!(
+            journal.balance_at(&AccountAddress::world(), &usdc(), second),
+            Some(balance(-100))
+        );
+        assert_eq!(
+            journal.balance_at(&user, &dai(), second),
+            Some(Balance::ZERO)
+        );
+        assert_eq!(journal.balance_at(&user, &usdc(), TxId(99)), None);
+    }
+
+    #[test]
+    fn aggregates_balances_by_pattern() {
+        let mut journal = Journal::default();
+        journal
+            .apply(tx(vec![
+                posting("world", "users:1:wallet", 10, usdc()),
+                posting("world", "users:2:wallet", 20, usdc()),
+                posting("world", "users:2:pending", 40, usdc()),
+                posting("world", "users:3:wallet", 7, dai()),
+            ]))
+            .unwrap();
+
+        let wallets: AccountPattern = "users:*:wallet".parse().unwrap();
+        assert_eq!(
+            journal.aggregate_balance(&wallets, &usdc()),
+            Ok(balance(30))
+        );
+        assert_eq!(journal.aggregate_balance(&wallets, &dai()), Ok(balance(7)));
+        let everything: AccountPattern = "users:*:*".parse().unwrap();
+        assert_eq!(
+            journal.aggregate_balance(&everything, &usdc()),
+            Ok(balance(70))
+        );
+        let nothing: AccountPattern = "merchants:*:wallet".parse().unwrap();
+        assert_eq!(
+            journal.aggregate_balance(&nothing, &usdc()),
+            Ok(Balance::ZERO)
         );
     }
 
