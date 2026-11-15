@@ -21,7 +21,8 @@ env:
 jobs:
   checks:
     # One ordered job: each step stops the pipeline on failure (fail-fast, cheapest first).
-    runs-on: [self-hosted, light]
+    # TODO: switch back to [self-hosted, light] once that runner picks up jobs for this repo.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -36,10 +37,11 @@ jobs:
           rustup toolchain install
           rustc --version
 
+      # Prebuilt binaries: hosted runners keep nothing between runs, so `cargo install` would rebuild every time.
       - name: Install cargo-audit and cargo-deny
-        run: |
-          cargo audit --version 2>/dev/null | grep -q " $CARGO_AUDIT_VERSION$" || cargo install --locked cargo-audit --version "$CARGO_AUDIT_VERSION"
-          cargo deny --version 2>/dev/null | grep -q " $CARGO_DENY_VERSION$" || cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }},cargo-deny@${{ env.CARGO_DENY_VERSION }}
 
       - name: Format
         run: cargo fmt --all --check
