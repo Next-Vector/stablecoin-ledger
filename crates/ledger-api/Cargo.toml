@@ -26,6 +26,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
 metrics.workspace = true
@@ -53,4 +54,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "v1"
+required-features = ["integration"]
+
+[[test]]
+name = "idempotency"
 required-features = ["integration"]

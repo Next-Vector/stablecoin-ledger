@@ -45,6 +45,11 @@ pub struct MetadataRequest {
     pub metadata: Metadata,
 }
 
+/// The body of actions that take no input (freeze, unfreeze): omit it or send `{}`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyRequest {}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TransactionResponse {
     pub id: u64,

@@ -3,12 +3,16 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::Response;
 use ledger_core::{AccountAddress, AccountPattern, AssetId, TxId};
+use ledger_store::IdempotencyKey;
 
+use super::dto::EmptyRequest;
 use super::dto::{AccountQuery, AccountResponse, BalancesQuery, BalancesResponse, balances, parse};
+use super::idempotency::{self, Outcome};
 use crate::AppState;
 use crate::error::{ApiError, ErrorBody, transaction_not_found};
-use crate::extract::{PathParams, QueryParams};
+use crate::extract::{Mutation, PathParams, QueryParams};
 
 /// Get an account
 ///
@@ -74,9 +78,10 @@ pub async fn aggregate_balances(
 /// A frozen account cannot be a posting source; it can still receive funds.
 #[utoipa::path(
     post, path = "/v1/accounts/{address}/freeze", tag = "accounts",
-    params(("address" = String, Path, example = "users:42:wallet")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result"), ("address" = String, Path, example = "users:42:wallet")),
     security(("api_key" = [])),
     responses(
+        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
         (status = 200, body = AccountResponse),
         (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
     )
@@ -84,16 +89,18 @@ pub async fn aggregate_balances(
 pub async fn freeze(
     State(state): State<AppState>,
     PathParams(address): PathParams<String>,
-) -> Result<Json<AccountResponse>, ApiError> {
-    set_frozen(&state, &address, true).await
+    Mutation { key, .. }: Mutation<EmptyRequest>,
+) -> Result<Response, ApiError> {
+    set_frozen(&state, &address, true, key.as_ref()).await
 }
 
 /// Unfreeze an account
 #[utoipa::path(
     post, path = "/v1/accounts/{address}/unfreeze", tag = "accounts",
-    params(("address" = String, Path, example = "users:42:wallet")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result"), ("address" = String, Path, example = "users:42:wallet")),
     security(("api_key" = [])),
     responses(
+        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
         (status = 200, body = AccountResponse),
         (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
     )
@@ -101,19 +108,30 @@ pub async fn freeze(
 pub async fn unfreeze(
     State(state): State<AppState>,
     PathParams(address): PathParams<String>,
-) -> Result<Json<AccountResponse>, ApiError> {
-    set_frozen(&state, &address, false).await
+    Mutation { key, .. }: Mutation<EmptyRequest>,
+) -> Result<Response, ApiError> {
+    set_frozen(&state, &address, false, key.as_ref()).await
 }
 
 async fn set_frozen(
     state: &AppState,
     address: &str,
     frozen: bool,
-) -> Result<Json<AccountResponse>, ApiError> {
+    key: Option<&IdempotencyKey>,
+) -> Result<Response, ApiError> {
     let address = parse::<AccountAddress>("address", address)?;
-    state.store.set_frozen(&address, frozen).await?;
-    tracing::info!(account = %address, frozen, "account freeze changed");
-    account(state, &address, None).await
+    let operation = state.store.set_frozen(&address, frozen, key);
+    let replayed = match idempotency::run(&state.store, key, operation).await? {
+        Outcome::Done(()) => {
+            tracing::info!(account = %address, frozen, "account freeze changed");
+            false
+        }
+        Outcome::Replay { .. } => true,
+    };
+    Ok(idempotency::respond(
+        account(state, &address, None).await?,
+        replayed,
+    ))
 }
 
 async fn account(

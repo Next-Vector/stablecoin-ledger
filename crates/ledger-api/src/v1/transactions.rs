@@ -3,16 +3,18 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use ledger_core::{AccountAddress, AssetId, LedgerStore, TxId};
-use ledger_store::{HistoryFilter, Page};
+use axum::response::Response;
+use ledger_core::{AccountAddress, AssetId, TxId};
+use ledger_store::{HistoryFilter, IdempotencyKey, OpError, Page};
 
 use super::dto::{
     CreateTransactionRequest, ListTransactionsQuery, MetadataRequest, TransactionPageResponse,
     TransactionResponse, parse,
 };
+use super::idempotency::{self, Outcome};
 use crate::AppState;
 use crate::error::{ApiError, ErrorBody, transaction_not_found};
-use crate::extract::{JsonBody, PathParams, QueryParams};
+use crate::extract::{Mutation, PathParams, QueryParams};
 
 /// Create a transaction
 ///
@@ -20,8 +22,10 @@ use crate::extract::{JsonBody, PathParams, QueryParams};
 #[utoipa::path(
     post, path = "/v1/transactions", tag = "transactions",
     request_body = CreateTransactionRequest,
+    params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result")),
     security(("api_key" = [])),
     responses(
+        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
         (status = 201, body = TransactionResponse),
         (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
         (status = 422, description = "INSUFFICIENT_FUNDS, ACCOUNT_FROZEN or BALANCE_OVERFLOW", body = ErrorBody),
@@ -29,10 +33,12 @@ use crate::extract::{JsonBody, PathParams, QueryParams};
 )]
 pub async fn create_transaction(
     State(state): State<AppState>,
-    JsonBody(request): JsonBody<CreateTransactionRequest>,
-) -> Result<(StatusCode, Json<TransactionResponse>), ApiError> {
-    let id = state.store.apply(request.into_transaction()?).await?;
-    Ok((StatusCode::CREATED, Json(recorded(&state, id).await?)))
+    Mutation { body, key }: Mutation<CreateTransactionRequest>,
+) -> Result<Response, ApiError> {
+    let operation = state
+        .store
+        .create_transaction(body.into_transaction()?, key.as_ref());
+    created(&state, key.as_ref(), operation).await
 }
 
 /// Get a transaction
@@ -103,23 +109,38 @@ pub async fn list_transactions(
 /// Creates a new transaction with mirrored postings. A transaction can be reverted once.
 #[utoipa::path(
     post, path = "/v1/transactions/{id}/revert", tag = "transactions",
-    params(("id" = u64, Path, description = "Transaction id")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result"), ("id" = u64, Path, description = "Transaction id")),
     request_body(content = Option<MetadataRequest>, description = "Optional metadata of the reversal"),
     security(("api_key" = [])),
     responses(
         (status = 201, description = "The reversal", body = TransactionResponse),
         (status = 404, description = "TRANSACTION_NOT_FOUND", body = ErrorBody),
-        (status = 409, description = "ALREADY_REVERTED", body = ErrorBody),
+        (status = 409, description = "IDEMPOTENCY_CONFLICT or ALREADY_REVERTED", body = ErrorBody),
         (status = 422, description = "INSUFFICIENT_FUNDS or ACCOUNT_FROZEN", body = ErrorBody),
     )
 )]
 pub async fn revert(
     State(state): State<AppState>,
     PathParams(id): PathParams<u64>,
-    JsonBody(request): JsonBody<MetadataRequest>,
-) -> Result<(StatusCode, Json<TransactionResponse>), ApiError> {
-    let reversal = state.store.revert(TxId(id), request.metadata).await?;
-    Ok((StatusCode::CREATED, Json(recorded(&state, reversal).await?)))
+    Mutation { body, key }: Mutation<MetadataRequest>,
+) -> Result<Response, ApiError> {
+    let operation = state.store.revert(TxId(id), body.metadata, key.as_ref());
+    created(&state, key.as_ref(), operation).await
+}
+
+/// Runs an operation that writes one transaction under its idempotency key and answers
+/// `201 Created` with that transaction (on a replay too).
+async fn created<E: Into<ApiError>>(
+    state: &AppState,
+    key: Option<&IdempotencyKey>,
+    operation: impl Future<Output = Result<TxId, OpError<E>>>,
+) -> Result<Response, ApiError> {
+    let (id, replayed) = match idempotency::run(&state.store, key, operation).await? {
+        Outcome::Done(id) => (id, false),
+        Outcome::Replay { transaction, .. } => (idempotency::recorded(transaction)?, true),
+    };
+    let response = (StatusCode::CREATED, Json(recorded(state, id).await?));
+    Ok(idempotency::respond(response, replayed))
 }
 
 async fn recorded(state: &AppState, id: TxId) -> Result<TransactionResponse, ApiError> {

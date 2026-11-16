@@ -132,6 +132,27 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
 }
 
 #[tokio::test]
+async fn documents_the_idempotency_key_on_every_mutating_route() {
+    let (_, _, body) = send(router(), Method::GET, "/openapi.json").await;
+    let spec = json(&body);
+    let mut mutating = 0;
+    for (path, operations) in spec["paths"].as_object().unwrap() {
+        let Some(post) = operations.get("post") else {
+            continue;
+        };
+        mutating += 1;
+        let documented = post["parameters"].as_array().is_some_and(|parameters| {
+            parameters
+                .iter()
+                .any(|p| p["name"] == "Idempotency-Key" && p["in"] == "header")
+        });
+        assert!(documented, "POST {path}");
+        assert!(post["responses"]["409"].is_object(), "POST {path}");
+    }
+    assert_eq!(mutating, 7);
+}
+
+#[tokio::test]
 async fn v1_routes_require_an_api_key_without_touching_the_database_first() {
     let (status, headers, body) = send(router(), Method::GET, "/v1/transactions").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

@@ -111,7 +111,6 @@ pub struct Transaction {
     pub id: TxId,               // monotonic u64
     pub postings: Vec<Posting>, // 1..=256
     pub metadata: Metadata,
-    pub idempotency_key: Option<String>,
     pub reverts: Option<TxId>,
     pub timestamp: DateTime<Utc>,
 }
@@ -454,7 +453,7 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 `POST /v1/transactions` accepts either `postings`, or `script` (or `script_name`) + `vars` (section 5.7). Additional endpoints: `POST /v1/scripts/dry-run` (FR-65), `POST · GET /v1/scripts` and `GET /v1/scripts/{name}/versions` (FR-66).
 
-All mutating requests accept an `Idempotency-Key` header. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
+All mutating requests accept an `Idempotency-Key` header (1–255 visible ASCII characters, global across clients). The key is recorded in the same DB transaction as the write, so a retry never writes twice, even when it races the first request. A repeat of the same request (same method, path and JSON body, ignoring key order and whitespace) returns the same resource with the original status and an `Idempotent-Replayed: true` header; a resource that changed since (e.g. a captured hold) is shown as it is now. A rejected request records nothing, so retrying it is evaluated again. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
 
 Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads need the `read` role, journal writes (transactions, reversals, holds) `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
 
@@ -463,7 +462,7 @@ Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads nee
 | 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount, `details.field` names the input) |
 | 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
 | 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND` |
-| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline) |
+| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
 | 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED` |
 
 Example request:
@@ -488,8 +487,6 @@ The source of truth is the append-only `transactions` and `postings` tables; `ba
 ```sql
 CREATE TABLE transactions (
     id              BIGSERIAL PRIMARY KEY,
-    idempotency_key TEXT UNIQUE,
-    request_hash    BYTEA,
     reverts         BIGINT UNIQUE REFERENCES transactions(id),
     metadata        JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -528,6 +525,14 @@ CREATE TABLE holds (
     remaining  NUMERIC(39,0) NOT NULL,
     status     TEXT NOT NULL, -- active | captured | voided | expired
     expires_at TIMESTAMPTZ
+);
+
+CREATE TABLE idempotency_keys (
+    key            TEXT PRIMARY KEY,          -- 1..255 visible ASCII
+    request_hash   BYTEA NOT NULL,            -- SHA-256 of method, path, canonical body
+    transaction_id BIGINT REFERENCES transactions(id),
+    hold_id        BIGINT REFERENCES holds(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 

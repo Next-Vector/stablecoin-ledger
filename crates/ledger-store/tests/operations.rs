@@ -8,7 +8,7 @@ use ledger_core::{
     AccountAddress, ApplyError, AssetId, Balance, HoldError, HoldId, HoldStatus, LedgerStore,
     Metadata, Posting, RevertError, Transaction, TxId,
 };
-use ledger_store::{OpError, PgStore};
+use ledger_store::{IdempotencyKey, KeyStatus, OpError, PgStore};
 use sqlx::PgPool;
 
 fn account(raw: &str) -> AccountAddress {
@@ -74,7 +74,7 @@ async fn reverts_a_transaction_once_with_mirrored_postings() {
         .await
         .unwrap();
 
-    let reversal = store.revert(spend, note("refund")).await.unwrap();
+    let reversal = store.revert(spend, note("refund"), None).await.unwrap();
 
     assert_eq!(balance(&store, "users:1:wallet").await, credit(100));
     assert_eq!(balance(&store, "merchants:1:wallet").await, Balance::ZERO);
@@ -89,11 +89,11 @@ async fn reverts_a_transaction_once_with_mirrored_postings() {
     assert_eq!(original.reverted_by, Some(reversal));
 
     assert!(matches!(
-        store.revert(spend, Metadata::new()).await,
+        store.revert(spend, Metadata::new(), None).await,
         Err(OpError::Rejected(RevertError::AlreadyReverted(id))) if id == spend
     ));
     assert!(matches!(
-        store.revert(TxId(99), Metadata::new()).await,
+        store.revert(TxId(99), Metadata::new(), None).await,
         Err(OpError::Rejected(RevertError::NotFound(TxId(99))))
     ));
 }
@@ -111,7 +111,7 @@ async fn a_reversal_follows_the_funds_rule() {
         .unwrap();
 
     assert!(matches!(
-        store.revert(spend, Metadata::new()).await,
+        store.revert(spend, Metadata::new(), None).await,
         Err(OpError::Rejected(RevertError::Apply(
             ApplyError::InsufficientFunds { .. }
         )))
@@ -137,7 +137,7 @@ async fn concurrent_reverts_of_one_transaction_succeed_once() {
     let attempts: Vec<_> = (0..10)
         .map(|_| {
             let store = store.clone();
-            tokio::spawn(async move { store.revert(spend, Metadata::new()).await })
+            tokio::spawn(async move { store.revert(spend, Metadata::new(), None).await })
         })
         .collect();
     let mut succeeded = 0;
@@ -235,7 +235,7 @@ async fn aggregates_balances_by_pattern() {
 async fn a_frozen_account_cannot_send_but_can_receive_until_unfrozen() {
     let (store, _) = funded().await;
     store
-        .set_frozen(&account("users:1:wallet"), true)
+        .set_frozen(&account("users:1:wallet"), true, None)
         .await
         .unwrap();
     assert!(
@@ -259,7 +259,7 @@ async fn a_frozen_account_cannot_send_but_can_receive_until_unfrozen() {
         .unwrap();
 
     store
-        .set_frozen(&account("users:1:wallet"), false)
+        .set_frozen(&account("users:1:wallet"), false, None)
         .await
         .unwrap();
     store
@@ -272,7 +272,7 @@ async fn a_frozen_account_cannot_send_but_can_receive_until_unfrozen() {
 async fn an_account_frozen_before_any_posting_exists() {
     let (store, _) = funded().await;
     store
-        .set_frozen(&account("users:9:wallet"), true)
+        .set_frozen(&account("users:9:wallet"), true, None)
         .await
         .unwrap();
     let frozen = store
@@ -288,7 +288,14 @@ async fn an_account_frozen_before_any_posting_exists() {
 async fn holds_reserve_then_capture_partially() {
     let (store, _) = funded().await;
     let (hold, _) = store
-        .hold(account("users:1:wallet"), 30, usdc(), None, note("order"))
+        .hold(
+            account("users:1:wallet"),
+            30,
+            usdc(),
+            None,
+            note("order"),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(hold.id(), HoldId(1));
@@ -302,6 +309,7 @@ async fn holds_reserve_then_capture_partially() {
             account("merchants:1:wallet"),
             20,
             Metadata::new(),
+            None,
         )
         .await
         .unwrap();
@@ -322,7 +330,7 @@ async fn holds_reserve_then_capture_partially() {
     assert_eq!(balance(&store, "holds:1").await, Balance::ZERO);
 
     assert!(matches!(
-        store.void(hold.id(), Metadata::new()).await,
+        store.void(hold.id(), Metadata::new(), None).await,
         Err(OpError::Rejected(HoldError::NotActive(
             _,
             HoldStatus::Captured
@@ -340,7 +348,8 @@ async fn void_returns_everything_and_rules_are_enforced() {
                 101,
                 usdc(),
                 None,
-                Metadata::new()
+                Metadata::new(),
+                None
             )
             .await,
         Err(OpError::Rejected(HoldError::Apply(
@@ -349,13 +358,27 @@ async fn void_returns_everything_and_rules_are_enforced() {
     ));
     assert!(matches!(
         store
-            .hold(account("users:1:wallet"), 0, usdc(), None, Metadata::new())
+            .hold(
+                account("users:1:wallet"),
+                0,
+                usdc(),
+                None,
+                Metadata::new(),
+                None
+            )
             .await,
         Err(OpError::Rejected(HoldError::ZeroAmount))
     ));
 
     let (hold, _) = store
-        .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+        .hold(
+            account("users:1:wallet"),
+            30,
+            usdc(),
+            None,
+            Metadata::new(),
+            None,
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -364,7 +387,8 @@ async fn void_returns_everything_and_rules_are_enforced() {
                 hold.id(),
                 account("merchants:1:wallet"),
                 31,
-                Metadata::new()
+                Metadata::new(),
+                None
             )
             .await,
         Err(OpError::Rejected(HoldError::ExceedsHold {
@@ -372,12 +396,12 @@ async fn void_returns_everything_and_rules_are_enforced() {
             held: 30
         }))
     ));
-    let (voided, _) = store.void(hold.id(), Metadata::new()).await.unwrap();
+    let (voided, _) = store.void(hold.id(), Metadata::new(), None).await.unwrap();
     assert_eq!(voided.status(), HoldStatus::Voided);
     assert_eq!(balance(&store, "users:1:wallet").await, credit(100));
 
     assert!(matches!(
-        store.void(HoldId(99), Metadata::new()).await,
+        store.void(HoldId(99), Metadata::new(), None).await,
         Err(OpError::Rejected(HoldError::NotFound(HoldId(99))))
     ));
 }
@@ -392,6 +416,7 @@ async fn a_hold_past_its_deadline_cannot_be_captured_but_can_be_voided() {
             usdc(),
             Some(1),
             Metadata::new(),
+            None,
         )
         .await
         .unwrap();
@@ -402,7 +427,8 @@ async fn a_hold_past_its_deadline_cannot_be_captured_but_can_be_voided() {
                 hold.id(),
                 account("merchants:1:wallet"),
                 30,
-                Metadata::new()
+                Metadata::new(),
+                None
             )
             .await,
         Err(OpError::Rejected(HoldError::NotActive(
@@ -410,7 +436,7 @@ async fn a_hold_past_its_deadline_cannot_be_captured_but_can_be_voided() {
             HoldStatus::Expired
         )))
     ));
-    store.void(hold.id(), Metadata::new()).await.unwrap();
+    store.void(hold.id(), Metadata::new(), None).await.unwrap();
     assert_eq!(balance(&store, "users:1:wallet").await, credit(100));
 }
 
@@ -418,7 +444,14 @@ async fn a_hold_past_its_deadline_cannot_be_captured_but_can_be_voided() {
 async fn concurrent_settlements_of_one_hold_succeed_once() {
     let (store, _) = funded().await;
     let (hold, _) = store
-        .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+        .hold(
+            account("users:1:wallet"),
+            30,
+            usdc(),
+            None,
+            Metadata::new(),
+            None,
+        )
         .await
         .unwrap();
     let id = hold.id();
@@ -427,10 +460,10 @@ async fn concurrent_settlements_of_one_hold_succeed_once() {
             let store = store.clone();
             tokio::spawn(async move {
                 if i % 2 == 0 {
-                    store.void(id, Metadata::new()).await
+                    store.void(id, Metadata::new(), None).await
                 } else {
                     store
-                        .capture(id, account("merchants:1:wallet"), 30, Metadata::new())
+                        .capture(id, account("merchants:1:wallet"), 30, Metadata::new(), None)
                         .await
                 }
             })
@@ -446,4 +479,41 @@ async fn concurrent_settlements_of_one_hold_succeed_once() {
     }
     assert_eq!(succeeded, 1);
     assert_eq!(balance(&store, "holds:1").await, Balance::ZERO);
+}
+
+#[tokio::test]
+async fn an_idempotency_key_is_recorded_with_its_write_and_never_reused() {
+    let (store, pool) = funded().await;
+    let key = IdempotencyKey::new("order-1", [1; 32]).unwrap();
+    assert_eq!(store.key_status(&key).await.unwrap(), KeyStatus::New);
+
+    let id = store
+        .create_transaction(tx(&[("world", "users:2:wallet", 5)]), Some(&key))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.key_status(&key).await.unwrap(),
+        KeyStatus::Replay {
+            transaction: Some(id),
+            hold: None
+        }
+    );
+    let other_request = IdempotencyKey::new("order-1", [2; 32]).unwrap();
+    assert_eq!(
+        store.key_status(&other_request).await.unwrap(),
+        KeyStatus::Conflict
+    );
+
+    assert!(matches!(
+        store
+            .create_transaction(tx(&[("world", "users:2:wallet", 5)]), Some(&key))
+            .await,
+        Err(OpError::KeyReused)
+    ));
+    let (transactions,): (i64,) = sqlx::query_as("SELECT count(*) FROM transactions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(transactions, 2, "the duplicate rolled back");
+    assert_eq!(balance(&store, "users:2:wallet").await, credit(5));
 }

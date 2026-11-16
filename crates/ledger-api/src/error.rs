@@ -166,9 +166,24 @@ impl<E: Into<ApiError>> From<OpError<E>> for ApiError {
     fn from(error: OpError<E>) -> Self {
         match error {
             OpError::Rejected(rule) => rule.into(),
+            OpError::KeyReused => idempotency_conflict(),
             OpError::Backend(source) => internal(source.as_ref()),
         }
     }
+}
+
+impl From<std::convert::Infallible> for ApiError {
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
+    }
+}
+
+pub fn idempotency_conflict() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "IDEMPOTENCY_CONFLICT",
+        "this Idempotency-Key was already used for a different request",
+    )
 }
 
 pub fn transaction_not_found() -> ApiError {

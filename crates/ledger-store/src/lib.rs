@@ -4,6 +4,7 @@ mod accounts;
 mod api_keys;
 mod history;
 mod holds;
+mod idempotency;
 
 pub use accounts::Account;
 pub use api_keys::{
@@ -11,6 +12,7 @@ pub use api_keys::{
     revoke_api_key,
 };
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
+pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -27,6 +29,10 @@ use sqlx::{PgConnection, PgPool};
 pub enum OpError<E> {
     #[error(transparent)]
     Rejected(E),
+    /// Another request recorded the same idempotency key first; nothing was written. Answer from
+    /// [`PgStore::key_status`].
+    #[error("the idempotency key was recorded by a concurrent request")]
+    KeyReused,
     #[error("storage backend failed: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -129,10 +135,28 @@ impl LedgerStore for PgStore {
 }
 
 impl PgStore {
+    /// Applies `tx` like [`LedgerStore::apply`], recording the idempotency key with it.
+    pub async fn create_transaction(
+        &self,
+        tx: Transaction,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<TxId, OpError<ApplyError>> {
+        let mut db = self.pool.begin().await?;
+        let id = apply_in(&mut db, &tx, None).await?;
+        idempotency::record(&mut db, key, Some(id), None).await?;
+        db.commit().await?;
+        Ok(tx_id(id)?)
+    }
+
     /// Reverses transaction `id` with mirrored postings (FR-03), at most once. Concurrent
     /// reversals of the same transaction are serialized by a lock on its row; the unique
     /// `transactions.reverts` constraint backs that up.
-    pub async fn revert(&self, id: TxId, metadata: Metadata) -> Result<TxId, OpError<RevertError>> {
+    pub async fn revert(
+        &self,
+        id: TxId,
+        metadata: Metadata,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<TxId, OpError<RevertError>> {
         let original = i64::try_from(id.0).map_err(backend)?;
         let mut db = self.pool.begin().await?;
         // Lock first, check after: a statement's snapshot is taken before it waits for a lock,
@@ -170,6 +194,7 @@ impl PgStore {
             .map_err(backend)?
             .reversed(metadata);
         let reversal_id = apply_in(&mut db, &reversal, Some(original)).await?;
+        idempotency::record(&mut db, key, Some(reversal_id), None).await?;
         db.commit().await?;
         Ok(tx_id(reversal_id)?)
     }

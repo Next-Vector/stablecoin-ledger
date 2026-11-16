@@ -2,7 +2,10 @@
 
 use ledger_core::{AccountAddress, AccountPattern, AssetId, Balance, Metadata, StoreError, TxId};
 
-use crate::{PgStore, backend};
+use std::convert::Infallible;
+
+use crate::idempotency::{self, IdempotencyKey};
+use crate::{OpError, PgStore, backend};
 
 /// An account as the API shows it. Accounts exist implicitly from their first posting; a row in
 /// `accounts` (metadata, flags) exists only once something was set on it, e.g. a freeze.
@@ -100,16 +103,19 @@ impl PgStore {
         &self,
         address: &AccountAddress,
         frozen: bool,
-    ) -> Result<(), StoreError> {
+        key: Option<&IdempotencyKey>,
+    ) -> Result<(), OpError<Infallible>> {
+        let mut db = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO accounts (address, frozen) VALUES ($1, $2) \
              ON CONFLICT (address) DO UPDATE SET frozen = EXCLUDED.frozen",
         )
         .bind(address.as_str())
         .bind(frozen)
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?;
+        .execute(&mut *db)
+        .await?;
+        idempotency::record(&mut db, key, None, None).await?;
+        db.commit().await?;
         Ok(())
     }
 }

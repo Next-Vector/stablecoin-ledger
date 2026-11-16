@@ -4,6 +4,7 @@
 pub(crate) mod accounts;
 pub(crate) mod dto;
 pub(crate) mod holds;
+mod idempotency;
 pub(crate) mod transactions;
 
 use axum::Router;

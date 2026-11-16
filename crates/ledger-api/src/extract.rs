@@ -3,25 +3,61 @@
 use axum::body::Bytes;
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::request::Parts;
+use ledger_store::{IdempotencyKey, InvalidIdempotencyKey};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
 
-/// A JSON body; an empty body reads as `{}` so bodies with only optional fields can be omitted.
-pub struct JsonBody<T>(pub T);
+/// The header carrying the client's idempotency key (FR-10).
+pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
 
-impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for JsonBody<T> {
+/// A mutating request: its JSON body (an empty body reads as `{}`, so bodies with only optional
+/// fields can be omitted) and its optional `Idempotency-Key`, bound to a hash of the request.
+pub struct Mutation<T> {
+    pub body: T,
+    pub key: Option<IdempotencyKey>,
+}
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Mutation<T> {
     type Rejection = ApiError;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let raw_key = match request.headers().get(IDEMPOTENCY_KEY) {
+            Some(value) => Some(
+                value
+                    .to_str()
+                    .map_err(|_| ApiError::invalid_field("Idempotency-Key", InvalidIdempotencyKey))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let target = format!("{} {}", request.method(), request.uri().path());
         let bytes = Bytes::from_request(request, state)
             .await
             .map_err(|rejection| ApiError::validation(rejection.body_text()))?;
         let raw: &[u8] = if bytes.is_empty() { b"{}" } else { &bytes };
-        serde_json::from_slice(raw)
-            .map(JsonBody)
-            .map_err(|error| ApiError::validation(format!("invalid JSON body: {error}")))
+        let invalid =
+            |error: serde_json::Error| ApiError::validation(format!("invalid JSON body: {error}"));
+        let value: Value = serde_json::from_slice(raw).map_err(invalid)?;
+        let key = raw_key
+            .map(|key| IdempotencyKey::new(&key, request_hash(&target, &value)))
+            .transpose()
+            .map_err(|error| ApiError::invalid_field("Idempotency-Key", error))?;
+        let body = T::deserialize(value).map_err(invalid)?;
+        Ok(Self { body, key })
     }
+}
+
+/// SHA-256 of the method, path and canonical JSON body. serde_json orders object keys, so the
+/// same request with other key order or whitespace hashes the same.
+fn request_hash(target: &str, body: &Value) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(target.as_bytes());
+    hasher.update([0]);
+    hasher.update(body.to_string().as_bytes());
+    hasher.finalize().into()
 }
 
 /// Path parameters.
