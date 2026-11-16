@@ -91,3 +91,7 @@ required-features = ["integration"]
 [[test]]
 name = "assets_cli"
 required-features = ["integration"]
+
+[[test]]
+name = "accounts_cli"
+required-features = ["integration"]

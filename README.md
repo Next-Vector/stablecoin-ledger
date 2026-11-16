@@ -61,6 +61,7 @@ Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error c
 ```sh
 ledger-api create-api-key --role write --name merchant-backend   # prints the key once
 ledger-api revoke-api-key <key_id>
+ledger-api allow-negative platform:gas:ethereum            # let a system account go negative (disallow-negative undoes it)
 ```
 
 In the stablecoin-dev stack run them inside the container: `./run-dev exec ledger cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.

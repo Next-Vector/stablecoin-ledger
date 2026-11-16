@@ -224,6 +224,8 @@ pub struct AccountResponse {
     pub metadata: Metadata,
     /// A frozen account cannot be a posting source; it can still receive.
     pub frozen: bool,
+    /// A system account (e.g. a gas expense account) that may go negative; set by an operator.
+    pub allow_negative: bool,
     #[schema(example = json!({"USDC@ethereum/6": "60000000"}))]
     pub balances: Balances,
 }
@@ -455,6 +457,7 @@ impl From<Account> for AccountResponse {
             address: account.address.to_string(),
             metadata: account.metadata,
             frozen: account.frozen,
+            allow_negative: account.allow_negative,
             balances: balances(account.balances),
         }
     }

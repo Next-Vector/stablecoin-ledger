@@ -120,7 +120,7 @@ pub struct Transaction {
 Rules:
 
 1. A posting amount is strictly greater than zero; `source` and `destination` differ.
-2. A transaction is rejected if any account without `allow_negative` would go negative, or is frozen.
+2. A transaction is rejected if any account without `allow_negative` would go negative, or is frozen. `world` may always go negative; any other account only once an operator sets `allow_negative` on it (`ledger-api allow-negative <account>`, undone with `disallow-negative`), e.g. a gas expense account `platform:gas:{net}`. `GET /v1/accounts/{address}` shows the flag.
 3. Transactions are immutable; corrections are made only by reversal (`reverts`), and a transaction can be reversed once.
 4. Invariant: for every asset, the sum of all account balances (including `world`) is zero.
 

@@ -298,6 +298,7 @@ async fn shows_accounts_now_and_at_a_past_transaction() {
     assert_eq!(status, StatusCode::OK, "{account}");
     assert_eq!(account["address"], "users:1:wallet");
     assert_eq!(account["frozen"], false);
+    assert_eq!(account["allow_negative"], false);
     assert_eq!(account["metadata"], json!({}));
     assert_eq!(account["balances"], json!({ USDC: "60" }));
 
