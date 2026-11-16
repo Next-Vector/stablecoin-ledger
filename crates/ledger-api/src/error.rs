@@ -5,7 +5,8 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use ledger_core::{ApplyError, HoldError, RevertError, StoreError};
-use ledger_store::OpError;
+use ledger_script::{CompileError, ParseError};
+use ledger_store::{OpError, RegisterError, ScriptError};
 use serde::Serialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
@@ -151,6 +152,75 @@ impl From<HoldError> for ApiError {
             HoldError::Apply(rule) => rule.into(),
         }
     }
+}
+
+impl From<ScriptError> for ApiError {
+    fn from(error: ScriptError) -> Self {
+        match error {
+            ScriptError::Apply(rule) => rule.into(),
+            ScriptError::Compile(error) => error.into(),
+        }
+    }
+}
+
+impl From<CompileError> for ApiError {
+    fn from(error: CompileError) -> Self {
+        let message = error.to_string();
+        match error {
+            CompileError::MissingValue(name)
+            | CompileError::UndeclaredValue(name)
+            | CompileError::InvalidValue { name, .. } => {
+                Self::invalid_field(&format!("vars.{name}"), message)
+            }
+            CompileError::InvalidAccount { .. } => Self::validation(message),
+            CompileError::InsufficientFunds {
+                asset,
+                covered,
+                needed,
+            } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INSUFFICIENT_FUNDS",
+                message,
+            )
+            .with_details(json!({
+                "asset": asset.to_string(),
+                "covered": covered.to_string(),
+                "needed": needed.to_string(),
+            })),
+            CompileError::AssetMismatch { .. }
+            | CompileError::Split(_)
+            | CompileError::Overflow
+            | CompileError::NoPostings
+            | CompileError::TooManyPostings(_)
+            | CompileError::Posting(_) => {
+                Self::new(StatusCode::UNPROCESSABLE_ENTITY, "SCRIPT_REJECTED", message)
+            }
+        }
+    }
+}
+
+impl From<RegisterError> for ApiError {
+    fn from(error: RegisterError) -> Self {
+        match error {
+            RegisterError::InvalidName => Self::invalid_field("name", error),
+            RegisterError::Invalid(parse) => script_invalid(&parse),
+        }
+    }
+}
+
+/// The script does not parse; the details give the position.
+pub fn script_invalid(error: &ParseError) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "SCRIPT_INVALID", error.to_string()).with_details(
+        json!({ "line": error.span.line, "column": error.span.column, "reason": error.message }),
+    )
+}
+
+pub fn script_not_found() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "SCRIPT_NOT_FOUND",
+        "no stored script has this name and version",
+    )
 }
 
 impl From<StoreError> for ApiError {

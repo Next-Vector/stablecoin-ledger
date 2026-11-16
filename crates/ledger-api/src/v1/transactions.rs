@@ -8,8 +8,8 @@ use ledger_core::{AccountAddress, AssetId, TxId};
 use ledger_store::{HistoryFilter, IdempotencyKey, OpError, Page};
 
 use super::dto::{
-    CreateTransactionRequest, ListTransactionsQuery, MetadataRequest, TransactionPageResponse,
-    TransactionResponse, parse,
+    CreateTransactionRequest, ListTransactionsQuery, MetadataRequest, TransactionInput,
+    TransactionPageResponse, TransactionResponse, parse,
 };
 use super::idempotency::{self, Outcome};
 use crate::AppState;
@@ -18,27 +18,38 @@ use crate::extract::{Mutation, PathParams, QueryParams};
 
 /// Create a transaction
 ///
-/// All postings apply atomically, or none do.
+/// From `postings`, or from a ledger script (`script` inline, or a stored `script_name`) with
+/// `vars`. All postings apply atomically, or none do. A script run records its source and
+/// variables in the metadata (`script.source`, `script.vars`, and for stored scripts
+/// `script.name` and `script.version`).
 #[utoipa::path(
     post, path = "/v1/transactions", tag = "transactions",
     request_body = CreateTransactionRequest,
     params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result")),
     security(("api_key" = [])),
     responses(
-        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
         (status = 201, body = TransactionResponse),
-        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
-        (status = 422, description = "INSUFFICIENT_FUNDS, ACCOUNT_FROZEN or BALANCE_OVERFLOW", body = ErrorBody),
+        (status = 400, description = "VALIDATION_ERROR or SCRIPT_INVALID", body = ErrorBody),
+        (status = 404, description = "SCRIPT_NOT_FOUND", body = ErrorBody),
+        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
+        (status = 422, description = "INSUFFICIENT_FUNDS, ACCOUNT_FROZEN, BALANCE_OVERFLOW or SCRIPT_REJECTED", body = ErrorBody),
     )
 )]
 pub async fn create_transaction(
     State(state): State<AppState>,
     Mutation { body, key }: Mutation<CreateTransactionRequest>,
 ) -> Result<Response, ApiError> {
-    let operation = state
-        .store
-        .create_transaction(body.into_transaction()?, key.as_ref());
-    created(&state, key.as_ref(), operation).await
+    match body.into_input()? {
+        TransactionInput::Postings(tx) => {
+            let operation = state.store.create_transaction(tx, key.as_ref());
+            created(&state, key.as_ref(), operation).await
+        }
+        TransactionInput::Script(run) => {
+            let (script, vars, audit) = super::scripts::load(&state, run).await?;
+            let operation = state.store.run_script(&script, &vars, audit, key.as_ref());
+            created(&state, key.as_ref(), operation).await
+        }
+    }
 }
 
 /// Get a transaction
@@ -137,7 +148,7 @@ async fn created<E: Into<ApiError>>(
 ) -> Result<Response, ApiError> {
     let (id, replayed) = match idempotency::run(&state.store, key, operation).await? {
         Outcome::Done(id) => (id, false),
-        Outcome::Replay { transaction, .. } => (idempotency::recorded(transaction)?, true),
+        Outcome::Replay(resources) => (idempotency::recorded(resources.transaction)?, true),
     };
     let response = (StatusCode::CREATED, Json(recorded(state, id).await?));
     Ok(idempotency::respond(response, replayed))

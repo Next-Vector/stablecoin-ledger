@@ -8,7 +8,7 @@ use ledger_core::{
     AccountAddress, ApplyError, AssetId, Balance, HoldError, HoldId, HoldStatus, LedgerStore,
     Metadata, Posting, RevertError, Transaction, TxId,
 };
-use ledger_store::{IdempotencyKey, KeyStatus, OpError, PgStore};
+use ledger_store::{IdempotencyKey, KeyStatus, OpError, PgStore, Resources};
 use sqlx::PgPool;
 
 fn account(raw: &str) -> AccountAddress {
@@ -493,10 +493,10 @@ async fn an_idempotency_key_is_recorded_with_its_write_and_never_reused() {
         .unwrap();
     assert_eq!(
         store.key_status(&key).await.unwrap(),
-        KeyStatus::Replay {
+        KeyStatus::Replay(Resources {
             transaction: Some(id),
-            hold: None
-        }
+            ..Resources::default()
+        })
     );
     let other_request = IdempotencyKey::new("order-1", [2; 32]).unwrap();
     assert_eq!(
@@ -516,4 +516,74 @@ async fn an_idempotency_key_is_recorded_with_its_write_and_never_reused() {
         .unwrap();
     assert_eq!(transactions, 2, "the duplicate rolled back");
     assert_eq!(balance(&store, "users:2:wallet").await, credit(5));
+}
+
+#[tokio::test]
+async fn concurrent_script_runs_with_crossing_sources_neither_deadlock_nor_overspend() {
+    let (store, _) = funded().await;
+    store
+        .apply(tx(&[("world", "users:2:wallet", 100)]))
+        .await
+        .unwrap();
+    // Opposite source orders: without one global lock order these would deadlock.
+    let forward = ledger_script::parse(
+        "send [USDC@ethereum/6 15] (source = { @users:1:wallet @users:2:wallet } destination = @shop:a)",
+    )
+    .unwrap();
+    let backward = ledger_script::parse(
+        "send [USDC@ethereum/6 15] (source = { @users:2:wallet @users:1:wallet } destination = @shop:b)",
+    )
+    .unwrap();
+    let runs: Vec<_> = (0..20)
+        .map(|i| {
+            let store = store.clone();
+            let script = if i % 2 == 0 {
+                forward.clone()
+            } else {
+                backward.clone()
+            };
+            tokio::spawn(async move {
+                store
+                    .run_script(&script, &ledger_script::Vars::new(), Metadata::new(), None)
+                    .await
+            })
+        })
+        .collect();
+    let mut succeeded = 0u128;
+    for run in runs {
+        match run.await.unwrap() {
+            Ok(_) => succeeded += 1,
+            Err(OpError::Rejected(ledger_store::ScriptError::Compile(
+                ledger_script::CompileError::InsufficientFunds { .. },
+            ))) => {}
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    // 200 available, 15 per run: 13 runs fit.
+    assert_eq!(succeeded, 13);
+    let spent = 15 * succeeded;
+    let left = balance(&store, "users:1:wallet").await.spendable(0)
+        + balance(&store, "users:2:wallet").await.spendable(0);
+    assert_eq!(left, 200 - spent);
+    let received =
+        balance(&store, "shop:a").await.spendable(0) + balance(&store, "shop:b").await.spendable(0);
+    assert_eq!(received, spent);
+}
+
+#[tokio::test]
+async fn concurrent_registrations_get_gapless_versions() {
+    let (store, _) = funded().await;
+    let source = "send [USDC@ethereum/6 1] (source = @world destination = @a)";
+    let registrations: Vec<_> = (0..10)
+        .map(|_| {
+            let store = store.clone();
+            tokio::spawn(async move { store.register_script("pay", source, None).await })
+        })
+        .collect();
+    let mut versions = Vec::new();
+    for registration in registrations {
+        versions.push(registration.await.unwrap().unwrap().version);
+    }
+    versions.sort_unstable();
+    assert_eq!(versions, (1..=10).collect::<Vec<u32>>());
 }

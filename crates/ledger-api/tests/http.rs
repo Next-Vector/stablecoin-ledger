@@ -116,6 +116,9 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
         "/v1/holds",
         "/v1/holds/{id}/capture",
         "/v1/holds/{id}/void",
+        "/v1/scripts",
+        "/v1/scripts/dry-run",
+        "/v1/scripts/{name}/versions",
     ] {
         let operations = spec["paths"][path]
             .as_object()
@@ -137,7 +140,11 @@ async fn documents_the_idempotency_key_on_every_mutating_route() {
     let spec = json(&body);
     let mut mutating = 0;
     for (path, operations) in spec["paths"].as_object().unwrap() {
-        let Some(post) = operations.get("post") else {
+        // A dry-run is a POST that writes nothing, so it needs no idempotency key.
+        let Some(post) = operations
+            .get("post")
+            .filter(|_| path != "/v1/scripts/dry-run")
+        else {
             continue;
         };
         mutating += 1;
@@ -149,7 +156,7 @@ async fn documents_the_idempotency_key_on_every_mutating_route() {
         assert!(documented, "POST {path}");
         assert!(post["responses"]["409"].is_object(), "POST {path}");
     }
-    assert_eq!(mutating, 7);
+    assert_eq!(mutating, 8);
 }
 
 #[tokio::test]

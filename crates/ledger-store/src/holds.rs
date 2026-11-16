@@ -50,7 +50,7 @@ impl PgStore {
         .bind(expires_at.map(i64::try_from).transpose().map_err(backend)?)
         .execute(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, Some(reserved), Some(id)).await?;
+        idempotency::record(&mut db, key, Some(reserved), Some(id), None).await?;
         db.commit().await?;
         Ok((hold, tx_id(reserved)?))
     }
@@ -156,7 +156,7 @@ async fn settle(
         .execute(&mut *db)
         .await?;
     let hold_id = i64::try_from(hold.id().0).map_err(backend)?;
-    idempotency::record(db, key, Some(settled), Some(hold_id)).await?;
+    idempotency::record(db, key, Some(settled), Some(hold_id), None).await?;
     let hold = Hold::new(
         hold.id(),
         hold.owner().clone(),

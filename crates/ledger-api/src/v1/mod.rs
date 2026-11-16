@@ -1,10 +1,12 @@
-//! The /v1 journal routes (spec §8). Reads need the `read` role, journal writes `write`, and
-//! freezing accounts `admin`. Handlers stay thin: parse input, call `PgStore`, shape the reply.
+//! The /v1 journal routes (spec §8). Reads and script dry-runs need the `read` role, journal
+//! writes and script registration `write`, and freezing accounts `admin`. Handlers stay thin:
+//! parse input, call `PgStore`, shape the reply.
 
 pub(crate) mod accounts;
 pub(crate) mod dto;
 pub(crate) mod holds;
 mod idempotency;
+pub(crate) mod scripts;
 pub(crate) mod transactions;
 
 use axum::Router;
@@ -21,13 +23,17 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/v1/transactions", get(transactions::list_transactions))
         .route("/v1/transactions/{id}", get(transactions::get_transaction))
         .route("/v1/accounts/{address}", get(accounts::get_account))
-        .route("/v1/balances", get(accounts::aggregate_balances));
+        .route("/v1/balances", get(accounts::aggregate_balances))
+        .route("/v1/scripts", get(scripts::list_scripts))
+        .route("/v1/scripts/{name}/versions", get(scripts::script_versions))
+        .route("/v1/scripts/dry-run", post(scripts::dry_run));
     let write = Router::new()
         .route("/v1/transactions", post(transactions::create_transaction))
         .route("/v1/transactions/{id}/revert", post(transactions::revert))
         .route("/v1/holds", post(holds::create_hold))
         .route("/v1/holds/{id}/capture", post(holds::capture))
-        .route("/v1/holds/{id}/void", post(holds::void));
+        .route("/v1/holds/{id}/void", post(holds::void))
+        .route("/v1/scripts", post(scripts::register_script));
     let admin = Router::new()
         .route("/v1/accounts/{address}/freeze", post(accounts::freeze))
         .route("/v1/accounts/{address}/unfreeze", post(accounts::unfreeze));

@@ -108,10 +108,10 @@ async fn respond(
 ) -> Result<Response, ApiError> {
     let (hold, tx, replayed) = match idempotency::run(&state.store, key, operation).await? {
         Outcome::Done((hold, tx)) => (hold, tx, false),
-        Outcome::Replay { transaction, hold } => {
-            let id = idempotency::recorded(hold)?;
+        Outcome::Replay(resources) => {
+            let id = idempotency::recorded(resources.hold)?;
             let hold = idempotency::recorded(state.store.find_hold(id).await?)?;
-            (hold, idempotency::recorded(transaction)?, true)
+            (hold, idempotency::recorded(resources.transaction)?, true)
         }
     };
     Ok(idempotency::respond(

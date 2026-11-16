@@ -7,7 +7,8 @@ use std::str::FromStr;
 use ledger_core::{
     AccountAddress, AssetId, Balance, Hold, HoldStatus, Metadata, Posting, Transaction, TxId,
 };
-use ledger_store::{Account, HistoryPage, RecordedTransaction};
+use ledger_script::Vars;
+use ledger_store::{Account, HistoryPage, RecordedTransaction, ScriptInfo, StoredScript};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -31,10 +32,124 @@ pub struct PostingBody {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTransactionRequest {
-    /// 1 to 256 postings, applied atomically.
-    pub postings: Vec<PostingBody>,
+    /// 1 to 256 postings, applied atomically. Exactly one of `postings`, `script` and
+    /// `script_name` is required.
+    pub postings: Option<Vec<PostingBody>>,
+    /// An inline ledger script (spec §5.7), compiled with `vars`.
+    pub script: Option<String>,
+    /// A stored script, run at its latest version unless `script_version` is given.
+    pub script_name: Option<String>,
+    pub script_version: Option<u32>,
+    /// Script variable values by name (without `$`).
+    #[schema(value_type = Option<Object>, example = json!({"buyer": "42", "price": "USDC@ethereum/6 100000000"}))]
+    pub vars: Option<Vars>,
+    /// Merged over metadata the script sets; keys starting with `script.` are reserved for the
+    /// audit record of script runs.
     #[serde(default)]
     pub metadata: Metadata,
+}
+
+/// `POST /v1/scripts/dry-run`: a script to evaluate without writing.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunRequest {
+    /// Exactly one of `script` and `script_name` is required.
+    pub script: Option<String>,
+    pub script_name: Option<String>,
+    pub script_version: Option<u32>,
+    #[schema(value_type = Option<Object>)]
+    pub vars: Option<Vars>,
+    #[serde(default)]
+    pub metadata: Metadata,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DryRunResponse {
+    pub postings: Vec<PostingBody>,
+    pub metadata: Metadata,
+    /// Resulting balances of the accounts the postings move: account → asset → balance.
+    #[schema(value_type = Object, example = json!({"merchants:7:wallet": {"USDC@ethereum/6": "99000000"}}))]
+    pub balances: BTreeMap<String, Balances>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterScriptRequest {
+    /// 1–64 characters of a-z, 0-9, _ and -.
+    #[schema(example = "checkout")]
+    pub name: String,
+    /// The script text; it must parse.
+    pub source: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScriptResponse {
+    pub name: String,
+    pub version: u32,
+    pub source: String,
+    /// Unix time in seconds.
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScriptSummary {
+    pub name: String,
+    /// The latest version.
+    pub version: u32,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScriptPageResponse {
+    /// By name.
+    pub items: Vec<ScriptSummary>,
+    /// Pass as `cursor` for the next page; null on the last page.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScriptVersionsResponse {
+    /// Oldest first.
+    pub items: Vec<ScriptResponse>,
+    pub next_cursor: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct ListScriptsQuery {
+    /// Page size, 1 to 500 (default 50).
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct ListVersionsQuery {
+    /// Page size, 1 to 500 (default 50).
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    pub cursor: Option<u32>,
+}
+
+/// Which script to run.
+pub enum ScriptRef {
+    Inline(String),
+    Stored { name: String, version: Option<u32> },
+}
+
+/// A request to run a script: which one, its variables and extra metadata.
+pub struct ScriptRun {
+    pub script: ScriptRef,
+    pub vars: Vars,
+    pub metadata: Metadata,
+}
+
+pub enum TransactionInput {
+    Postings(Transaction),
+    Script(ScriptRun),
 }
 
 /// Optional body of actions that only take metadata (revert, void).
@@ -197,16 +312,73 @@ pub fn parse_amount(field: &str, raw: &str) -> Result<u128, ApiError> {
 }
 
 impl CreateTransactionRequest {
-    pub fn into_transaction(self) -> Result<Transaction, ApiError> {
-        let postings = self
-            .postings
-            .iter()
-            .enumerate()
-            .map(|(i, posting)| posting.to_posting(&format!("postings[{i}]")))
-            .collect::<Result<Vec<_>, _>>()?;
-        Transaction::new(postings, self.metadata)
-            .map_err(|error| ApiError::invalid_field("postings", error))
+    pub fn into_input(self) -> Result<TransactionInput, ApiError> {
+        let script = script_ref(self.script, self.script_name, self.script_version)?;
+        match (self.postings, script) {
+            (Some(postings), None) => {
+                if self.vars.is_some() {
+                    return Err(ApiError::invalid_field(
+                        "vars",
+                        "is only allowed with a script",
+                    ));
+                }
+                Ok(TransactionInput::Postings(transaction(
+                    &postings,
+                    self.metadata,
+                )?))
+            }
+            (None, Some(script)) => Ok(TransactionInput::Script(ScriptRun {
+                script,
+                vars: self.vars.unwrap_or_default(),
+                metadata: self.metadata,
+            })),
+            _ => Err(ApiError::validation(
+                "exactly one of postings, script and script_name is required",
+            )),
+        }
     }
+}
+
+impl DryRunRequest {
+    pub fn into_run(self) -> Result<ScriptRun, ApiError> {
+        let script =
+            script_ref(self.script, self.script_name, self.script_version)?.ok_or_else(|| {
+                ApiError::validation("exactly one of script and script_name is required")
+            })?;
+        Ok(ScriptRun {
+            script,
+            vars: self.vars.unwrap_or_default(),
+            metadata: self.metadata,
+        })
+    }
+}
+
+fn script_ref(
+    script: Option<String>,
+    name: Option<String>,
+    version: Option<u32>,
+) -> Result<Option<ScriptRef>, ApiError> {
+    match (script, name, version) {
+        (None, None, None) => Ok(None),
+        (Some(source), None, None) => Ok(Some(ScriptRef::Inline(source))),
+        (None, Some(name), version) => Ok(Some(ScriptRef::Stored { name, version })),
+        (Some(_), Some(_), _) => Err(ApiError::validation(
+            "give either script or script_name, not both",
+        )),
+        (_, None, Some(_)) => Err(ApiError::invalid_field(
+            "script_version",
+            "is only allowed with script_name",
+        )),
+    }
+}
+
+fn transaction(postings: &[PostingBody], metadata: Metadata) -> Result<Transaction, ApiError> {
+    let postings = postings
+        .iter()
+        .enumerate()
+        .map(|(i, posting)| posting.to_posting(&format!("postings[{i}]")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Transaction::new(postings, metadata).map_err(|error| ApiError::invalid_field("postings", error))
 }
 
 impl PostingBody {
@@ -273,6 +445,27 @@ impl From<Account> for AccountResponse {
             metadata: account.metadata,
             frozen: account.frozen,
             balances: balances(account.balances),
+        }
+    }
+}
+
+impl From<StoredScript> for ScriptResponse {
+    fn from(script: StoredScript) -> Self {
+        Self {
+            name: script.name,
+            version: script.version,
+            source: script.source,
+            created_at: script.created_at,
+        }
+    }
+}
+
+impl From<ScriptInfo> for ScriptSummary {
+    fn from(script: ScriptInfo) -> Self {
+        Self {
+            name: script.name,
+            version: script.version,
+            created_at: script.created_at,
         }
     }
 }

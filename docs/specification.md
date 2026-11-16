@@ -280,6 +280,8 @@ Compilation (`ledger_script::compile`) is a pure function of the script, the var
 - Sources pay destinations in order (the first source pays the first destinations until it runs out). A move from an account to itself is skipped. More than 256 postings, or none, is an error.
 - `set_tx_meta` values are stored as given; a later key overwrites an earlier one.
 
+Running a script (`POST /v1/transactions` with `script` or `script_name` + `vars`) locks every balance row the script can touch — the source and destination accounts of every send, which depend on the script and its variables but not on balances — in one ordered statement, then compiles against those locked balances and applies the result in the same DB transaction, so concurrent runs neither deadlock nor act on stale balances. The transaction metadata records `script.source` and `script.vars` (JSON), plus `script.name` and `script.version` for a stored script; the `script.` prefix is reserved. A dry run (`POST /v1/scripts/dry-run`) reads the same balances without locks, applies the ledger rules and returns the postings, the metadata and the resulting balances, writing nothing. Stored scripts (`POST /v1/scripts`) are immutable versions numbered from 1 per name (`[a-z0-9_-]{1,64}`); a script must parse to be stored, and `script_name` runs the latest version unless `script_version` pins one.
+
 ## 6. Non-functional requirements
 
 Correctness takes priority over speed: no optimization is accepted if it weakens the invariants of section 4. The figures below are targets; actual numbers are recorded by benchmarks in the README.
@@ -464,15 +466,15 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 All mutating requests accept an `Idempotency-Key` header (1–255 visible ASCII characters, global across clients). The key is recorded in the same DB transaction as the write, so a retry never writes twice, even when it races the first request. A repeat of the same request (same method, path and JSON body, ignoring key order and whitespace) returns the same resource with the original status and an `Idempotent-Replayed: true` header; a resource that changed since (e.g. a captured hold) is shown as it is now. A rejected request records nothing, so retrying it is evaluated again. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
 
-Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads need the `read` role, journal writes (transactions, reversals, holds) `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
+Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and script dry-runs need the `read` role, journal writes (transactions, reversals, holds) and script registration `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
 
 | Status | Codes |
 |---|---|
-| 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount, `details.field` names the input) |
+| 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount or script variable, `details.field` names the input), `SCRIPT_INVALID` (`details.line` and `details.column`) |
 | 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
-| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND` |
+| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND` |
 | 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
-| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED` |
+| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch) |
 
 Example request:
 
@@ -536,11 +538,21 @@ CREATE TABLE holds (
     expires_at TIMESTAMPTZ
 );
 
+CREATE TABLE scripts (
+    name       TEXT NOT NULL,                 -- [a-z0-9_-]{1,64}
+    version    INTEGER NOT NULL,              -- 1, 2, … per name
+    source     TEXT NOT NULL,                 -- ≤ 64 KB
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (name, version)
+);
+
 CREATE TABLE idempotency_keys (
     key            TEXT PRIMARY KEY,          -- 1..255 visible ASCII
     request_hash   BYTEA NOT NULL,            -- SHA-256 of method, path, canonical body
     transaction_id BIGINT REFERENCES transactions(id),
     hold_id        BIGINT REFERENCES holds(id),
+    script_name    TEXT,                      -- with script_version: a registered script
+    script_version INTEGER,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```

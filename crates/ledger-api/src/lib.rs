@@ -69,6 +69,10 @@ impl AppState {
         v1::holds::create_hold,
         v1::holds::capture,
         v1::holds::void,
+        v1::scripts::dry_run,
+        v1::scripts::register_script,
+        v1::scripts::list_scripts,
+        v1::scripts::script_versions,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)

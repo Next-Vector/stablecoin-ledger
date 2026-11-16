@@ -85,3 +85,30 @@ fn more_than_256_postings_are_rejected() {
         256
     );
 }
+
+#[test]
+fn touched_lists_every_account_a_script_can_move_whatever_the_balances() {
+    let script = ledger_script::parse(
+        "vars {\n  account $buyer\n}\n\
+         send [USDC@ethereum/6 10] (source = { @users:{$buyer}:bonus @users:{$buyer}:wallet } destination = { 50% to @a remaining to @b })\n\
+         send [DAI@ethereum/18 1] (source = @world destination = @a)",
+    )
+    .unwrap();
+    let vars = ledger_script::Vars::from([("buyer".to_owned(), "42".to_owned())]);
+    let touched: Vec<String> = ledger_script::touched(&script, &vars)
+        .unwrap()
+        .into_iter()
+        .map(|(account, asset)| format!("{account} {asset}"))
+        .collect();
+    assert_eq!(
+        touched,
+        [
+            "a DAI@ethereum/18",
+            "a USDC@ethereum/6",
+            "b USDC@ethereum/6",
+            "users:42:bonus USDC@ethereum/6",
+            "users:42:wallet USDC@ethereum/6",
+            "world DAI@ethereum/18",
+        ]
+    );
+}

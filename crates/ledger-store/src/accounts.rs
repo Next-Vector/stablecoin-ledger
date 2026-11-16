@@ -114,7 +114,7 @@ impl PgStore {
         .bind(frozen)
         .execute(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, None, None).await?;
+        idempotency::record(&mut db, key, None, None, None).await?;
         db.commit().await?;
         Ok(())
     }

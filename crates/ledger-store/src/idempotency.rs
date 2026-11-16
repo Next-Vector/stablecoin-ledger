@@ -38,41 +38,60 @@ impl IdempotencyKey {
     }
 }
 
+/// The resources a request produced, recorded with its key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resources {
+    pub transaction: Option<TxId>,
+    pub hold: Option<HoldId>,
+    /// A registered script version: name and version.
+    pub script: Option<(String, u32)>,
+}
+
 /// What a key means for an incoming request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {
     /// Never used: run the request and record the key with it.
     New,
     /// Used before with the same request: return the resources it produced.
-    Replay {
-        transaction: Option<TxId>,
-        hold: Option<HoldId>,
-    },
+    Replay(Resources),
     /// Used before with a different request.
     Conflict,
 }
 
 impl PgStore {
     pub async fn key_status(&self, key: &IdempotencyKey) -> Result<KeyStatus, StoreError> {
-        let row: Option<(Vec<u8>, Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT request_hash, transaction_id, hold_id FROM idempotency_keys WHERE key = $1",
+        type Row = (
+            Vec<u8>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<i32>,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT request_hash, transaction_id, hold_id, script_name, script_version \
+             FROM idempotency_keys WHERE key = $1",
         )
         .bind(&key.key)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?;
-        let Some((request_hash, transaction, hold)) = row else {
+        let Some((request_hash, transaction, hold, script_name, script_version)) = row else {
             return Ok(KeyStatus::New);
         };
         if request_hash != key.request_hash {
             return Ok(KeyStatus::Conflict);
         }
-        Ok(KeyStatus::Replay {
+        let script = match (script_name, script_version) {
+            (Some(name), Some(version)) => Some((name, u32::try_from(version).map_err(backend)?)),
+            _ => None,
+        };
+        Ok(KeyStatus::Replay(Resources {
             transaction: transaction.map(tx_id).transpose()?,
             hold: hold
                 .map(|id| u64::try_from(id).map(HoldId).map_err(backend))
                 .transpose()?,
-        })
+            script,
+        }))
     }
 }
 
@@ -84,18 +103,22 @@ pub(crate) async fn record<E>(
     key: Option<&IdempotencyKey>,
     transaction: Option<i64>,
     hold: Option<i64>,
+    script: Option<(&str, i32)>,
 ) -> Result<(), OpError<E>> {
     let Some(key) = key else {
         return Ok(());
     };
     let result = sqlx::query(
-        "INSERT INTO idempotency_keys (key, request_hash, transaction_id, hold_id) \
-         VALUES ($1, $2, $3, $4)",
+        "INSERT INTO idempotency_keys \
+         (key, request_hash, transaction_id, hold_id, script_name, script_version) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&key.key)
     .bind(key.request_hash.as_slice())
     .bind(transaction)
     .bind(hold)
+    .bind(script.map(|(name, _)| name))
+    .bind(script.map(|(_, version)| version))
     .execute(db)
     .await;
     match result {

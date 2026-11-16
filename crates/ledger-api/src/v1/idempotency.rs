@@ -5,8 +5,7 @@ use std::future::Future;
 
 use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
-use ledger_core::{HoldId, TxId};
-use ledger_store::{IdempotencyKey, KeyStatus, OpError, PgStore};
+use ledger_store::{IdempotencyKey, KeyStatus, OpError, PgStore, Resources};
 
 use crate::error::{ApiError, idempotency_conflict};
 
@@ -17,10 +16,7 @@ pub enum Outcome<T> {
     /// The operation ran now.
     Done(T),
     /// The key was used before for this same request; these are the resources it produced.
-    Replay {
-        transaction: Option<TxId>,
-        hold: Option<HoldId>,
-    },
+    Replay(Resources),
 }
 
 /// Runs `operation` (which must record `key` in its DB transaction) unless the key was used
@@ -53,7 +49,7 @@ async fn previous<T>(
 ) -> Result<Option<Outcome<T>>, ApiError> {
     match store.key_status(key).await? {
         KeyStatus::New => Ok(None),
-        KeyStatus::Replay { transaction, hold } => Ok(Some(Outcome::Replay { transaction, hold })),
+        KeyStatus::Replay(resources) => Ok(Some(Outcome::Replay(resources))),
         KeyStatus::Conflict => Err(idempotency_conflict()),
     }
 }

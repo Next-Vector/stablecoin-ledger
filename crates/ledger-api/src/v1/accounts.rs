@@ -126,7 +126,7 @@ async fn set_frozen(
             tracing::info!(account = %address, frozen, "account freeze changed");
             false
         }
-        Outcome::Replay { .. } => true,
+        Outcome::Replay(_) => true,
     };
     Ok(idempotency::respond(
         account(state, &address, None).await?,

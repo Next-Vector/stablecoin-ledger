@@ -4,7 +4,7 @@
 //! DB transaction that applies the result. Sends run in order and each sees the balances the
 //! earlier ones left.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ledger_core::{
     AccountAddress, AssetId, Balance, Metadata, Posting, PostingError, Transaction,
@@ -82,6 +82,35 @@ pub fn compile(
         TransactionError::NoPostings => CompileError::NoPostings,
         TransactionError::TooManyPostings(count) => CompileError::TooManyPostings(count),
     })
+}
+
+/// Every `(account, asset)` the compiled transaction can touch: all source and destination
+/// accounts of every send, in its asset. It does not depend on balances, so a store can lock
+/// exactly these balance rows before reading them and compiling.
+pub fn touched(
+    script: &Script,
+    vars: &Vars,
+) -> Result<BTreeSet<(AccountAddress, AssetId)>, CompileError> {
+    let compiler = Compiler {
+        values: bind(script, vars)?,
+        balance: |_: &AccountAddress, _: &AssetId| Balance::ZERO,
+        changed: HashMap::new(),
+        postings: Vec::new(),
+        metadata: Metadata::new(),
+    };
+    let mut touched = BTreeSet::new();
+    for statement in &script.statements {
+        let Statement::Send(send) = statement else {
+            continue;
+        };
+        let (asset, _) = compiler.monetary(&send.amount)?;
+        let sources = send.source.iter().map(|item| &item.account);
+        let destinations = send.destination.iter().map(|item| &item.account);
+        for account in sources.chain(destinations) {
+            touched.insert((compiler.account(account)?, asset.clone()));
+        }
+    }
+    Ok(touched)
 }
 
 #[derive(Debug, Clone)]

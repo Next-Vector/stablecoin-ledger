@@ -17,6 +17,7 @@ integration = []
 
 [dependencies]
 ledger-core = { path = "../ledger-core" }
+ledger-script = { path = "../ledger-script" }
 ledger-store = { path = "../ledger-store" }
 sqlx.workspace = true
 tokio.workspace = true
@@ -58,4 +59,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "idempotency"
+required-features = ["integration"]
+
+[[test]]
+name = "scripts"
 required-features = ["integration"]

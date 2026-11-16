@@ -5,6 +5,7 @@ mod api_keys;
 mod history;
 mod holds;
 mod idempotency;
+mod scripts;
 
 pub use accounts::Account;
 pub use api_keys::{
@@ -12,7 +13,8 @@ pub use api_keys::{
     revoke_api_key,
 };
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
-pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus};
+pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus, Resources};
+pub use scripts::{DryRun, RegisterError, ScriptError, ScriptInfo, StoredScript};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -143,7 +145,7 @@ impl PgStore {
     ) -> Result<TxId, OpError<ApplyError>> {
         let mut db = self.pool.begin().await?;
         let id = apply_in(&mut db, &tx, None).await?;
-        idempotency::record(&mut db, key, Some(id), None).await?;
+        idempotency::record(&mut db, key, Some(id), None, None).await?;
         db.commit().await?;
         Ok(tx_id(id)?)
     }
@@ -194,10 +196,70 @@ impl PgStore {
             .map_err(backend)?
             .reversed(metadata);
         let reversal_id = apply_in(&mut db, &reversal, Some(original)).await?;
-        idempotency::record(&mut db, key, Some(reversal_id), None).await?;
+        idempotency::record(&mut db, key, Some(reversal_id), None, None).await?;
         db.commit().await?;
         Ok(tx_id(reversal_id)?)
     }
+}
+
+/// Balances of `keys` (account, asset). With `lock`, creates the missing rows and row-locks all
+/// of them in (account, asset) order, the one order every writer uses, so writers never
+/// deadlock; without, it is a plain read of what exists.
+pub(crate) async fn read_balances(
+    db: &mut PgConnection,
+    keys: &BTreeSet<(String, String)>,
+    lock: bool,
+) -> Result<HashMap<(String, String), Balance>, StoreError> {
+    let (accounts, assets): (Vec<String>, Vec<String>) = keys.iter().cloned().unzip();
+    if lock {
+        sqlx::query(
+            "INSERT INTO balances (account, asset) \
+             SELECT * FROM UNNEST($1::text[], $2::text[]) ORDER BY 1, 2 \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&accounts)
+        .bind(&assets)
+        .execute(&mut *db)
+        .await
+        .map_err(backend)?;
+    }
+    let rows: Vec<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT account, asset, balance::text FROM balances \
+         WHERE (account, asset) IN (SELECT * FROM UNNEST($1::text[], $2::text[])) \
+         ORDER BY account, asset{}",
+        if lock { " FOR UPDATE" } else { "" }
+    )))
+    .bind(&accounts)
+    .bind(&assets)
+    .fetch_all(&mut *db)
+    .await
+    .map_err(backend)?;
+    rows.into_iter()
+        .map(|(account, asset, balance)| {
+            Ok((
+                (account, asset),
+                balance.parse::<Balance>().map_err(backend)?,
+            ))
+        })
+        .collect()
+}
+
+/// Which of `accounts` are frozen; with `lock`, holds a share lock so a freeze cannot slip in
+/// before the caller commits.
+pub(crate) async fn frozen_accounts(
+    db: &mut PgConnection,
+    accounts: &[String],
+    lock: bool,
+) -> Result<HashSet<String>, StoreError> {
+    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT address FROM accounts WHERE frozen AND address = ANY($1){}",
+        if lock { " FOR SHARE" } else { "" }
+    )))
+    .bind(accounts)
+    .fetch_all(&mut *db)
+    .await
+    .map_err(backend)?;
+    Ok(rows.into_iter().map(|(address,)| address).collect())
 }
 
 /// Rebuilds a posting read back from the journal.
@@ -234,52 +296,13 @@ async fn apply_in(
         .flat_map(|p| [(p.source(), p.asset()), (p.destination(), p.asset())])
         .map(|(account, asset)| (account.to_string(), asset.to_string()))
         .collect();
-    let (accounts, assets): (Vec<String>, Vec<String>) = keys.into_iter().unzip();
-
-    sqlx::query(
-        "INSERT INTO balances (account, asset) \
-             SELECT * FROM UNNEST($1::text[], $2::text[]) ORDER BY 1, 2 \
-             ON CONFLICT DO NOTHING",
-    )
-    .bind(&accounts)
-    .bind(&assets)
-    .execute(&mut *db)
-    .await
-    .map_err(backend)?;
-
-    let locked: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT account, asset, balance::text FROM balances \
-             WHERE (account, asset) IN (SELECT * FROM UNNEST($1::text[], $2::text[])) \
-             ORDER BY account, asset FOR UPDATE",
-    )
-    .bind(&accounts)
-    .bind(&assets)
-    .fetch_all(&mut *db)
-    .await
-    .map_err(backend)?;
-    let mut current = HashMap::with_capacity(locked.len());
-    for (account, asset, balance) in locked {
-        current.insert(
-            (account, asset),
-            balance.parse::<Balance>().map_err(backend)?,
-        );
-    }
-
+    let current = read_balances(db, &keys, true).await?;
     let sources: Vec<String> = tx
         .postings()
         .iter()
         .map(|p| p.source().to_string())
         .collect();
-    let frozen: HashSet<String> = sqlx::query_as::<_, (String,)>(
-        "SELECT address FROM accounts WHERE frozen AND address = ANY($1) FOR SHARE",
-    )
-    .bind(&sources)
-    .fetch_all(&mut *db)
-    .await
-    .map_err(backend)?
-    .into_iter()
-    .map(|(address,)| address)
-    .collect();
+    let frozen = frozen_accounts(db, &sources, true).await?;
 
     let changes = plan(
         tx,
