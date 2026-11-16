@@ -1,0 +1,2 @@
+send [USDC@ethereum/6 10] (source = @world destination = @users:1:wallet)
+send [USDC@ethereum/6 10] (source = @users:1:wallet destination = @users:2:wallet)

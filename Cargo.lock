@@ -943,6 +943,7 @@ name = "ledger-script"
 version = "0.0.0"
 dependencies = [
  "ledger-core",
+ "proptest",
  "thiserror",
 ]
 

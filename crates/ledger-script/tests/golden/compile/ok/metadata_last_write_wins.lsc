@@ -1,0 +1,7 @@
+vars {
+  monetary $amount
+}
+send $amount (source = @world destination = @a)
+set_tx_meta("amount", $amount)
+set_tx_meta("note", "first")
+set_tx_meta("note", "second")

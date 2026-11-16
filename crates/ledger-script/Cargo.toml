@@ -14,3 +14,6 @@ workspace = true
 [dependencies]
 ledger-core = { path = "../ledger-core" }
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

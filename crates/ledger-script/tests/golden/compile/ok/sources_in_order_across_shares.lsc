@@ -1,0 +1,10 @@
+send [USDC@ethereum/6 10] (
+  source = {
+    @users:1:bonus
+    @users:1:wallet
+  }
+  destination = {
+    50% to @a
+    remaining to @b
+  }
+)

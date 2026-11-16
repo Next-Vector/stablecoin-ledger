@@ -1,0 +1,1 @@
+send [USDC@ethereum/6 10] (source = @world destination = { 50% to @a 30% to @b })

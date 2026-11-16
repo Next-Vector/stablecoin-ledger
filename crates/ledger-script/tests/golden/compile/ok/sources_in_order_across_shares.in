@@ -1,0 +1,2 @@
+balance users:1:bonus USDC@ethereum/6 7
+balance users:1:wallet USDC@ethereum/6 100

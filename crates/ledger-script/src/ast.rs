@@ -3,6 +3,8 @@
 
 use ledger_core::AssetId;
 
+pub use crate::ratio::Ratio;
+
 /// A position in the script text, 1-based; columns count characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -144,6 +146,6 @@ pub enum Share {
 /// A part of the whole: `12.5%`, `1/3` or a `portion` variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Portion {
-    Ratio { numerator: u128, denominator: u128 },
+    Literal(Ratio),
     Var(String),
 }

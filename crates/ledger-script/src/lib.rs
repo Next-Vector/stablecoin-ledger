@@ -4,9 +4,13 @@
 //! terminates and evaluates deterministically.
 
 pub mod ast;
+mod compile;
 mod error;
 mod lexer;
 mod parser;
+mod ratio;
 
+pub use compile::{CompileError, Vars, compile};
 pub use error::ParseError;
 pub use parser::{MAX_SCRIPT_BYTES, parse};
+pub use ratio::{RatioError, SplitError};

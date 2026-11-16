@@ -1,0 +1,4 @@
+users:9:wallet -> orders:a1:escrow 125 USDC@ethereum/6
+users:9:wallet -> users:1000:wallet 875 USDC@ethereum/6
+users:9:wallet -> platform:fees 3 USDC@ethereum/6
+meta order = a1

@@ -1,0 +1,23 @@
+vars {
+  account $from
+  asset $coin
+  monetary $fee
+  number $units
+  portion $share
+  string $order
+}
+
+send [$coin $units] (
+  source = $from
+  destination = {
+    $share to @orders:{$order}:escrow
+    remaining to @users:{$units}:wallet
+  }
+)
+
+send $fee (
+  source = $from
+  destination = @platform:fees
+)
+
+set_tx_meta("order", $order)

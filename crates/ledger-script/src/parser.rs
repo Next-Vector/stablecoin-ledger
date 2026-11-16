@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    Account, Amount, Asset, DestinationItem, MetaValue, Monetary, Portion, Script, Segment, Send,
-    Share, SourceItem, Span, Statement, VarDecl, VarType,
+    Account, Amount, Asset, DestinationItem, MetaValue, Monetary, Portion, Ratio, Script, Segment,
+    Send, Share, SourceItem, Span, Statement, VarDecl, VarType,
 };
 use crate::error::ParseError;
 use crate::lexer::{Token, tokenize};
@@ -275,30 +275,21 @@ impl Parser {
             }
             Token::Number(digits) => {
                 self.advance();
-                let (numerator, denominator) = if self.at_symbol('%') {
+                let ratio = if self.at_symbol('%') {
                     self.advance();
-                    percent(&digits, span)?
+                    Ratio::percent(&digits)
                 } else if self.at_symbol('/') {
                     self.advance();
                     let Token::Number(below) = self.peek().clone() else {
                         return Err(self.expected("a denominator"));
                     };
                     self.advance();
-                    (integer(&digits, span)?, integer(&below, span)?)
+                    Ratio::parse(&format!("{digits}/{below}"))
                 } else {
                     return Err(self.expected("`%` or `/`"));
                 };
-                if denominator == 0 {
-                    return Err(ParseError::new(span, "a portion cannot divide by zero"));
-                }
-                if numerator > denominator {
-                    return Err(ParseError::new(span, "a portion cannot exceed 100%"));
-                }
-                let divisor = gcd(numerator, denominator);
-                Ok(Share::Portion(Portion::Ratio {
-                    numerator: numerator / divisor,
-                    denominator: denominator / divisor,
-                }))
+                let ratio = ratio.map_err(|error| ParseError::new(span, error.to_string()))?;
+                Ok(Share::Portion(Portion::Literal(ratio)))
             }
             _ => Err(self.expected("a portion (`10%`, `1/3`, a variable) or `remaining`")),
         }
@@ -405,24 +396,4 @@ fn integer(digits: &str, span: Span) -> Result<u128, ParseError> {
     digits
         .parse()
         .map_err(|_| ParseError::new(span, format!("`{digits}` is too large")))
-}
-
-/// `12.5` (percent) as the ratio 125/1000.
-fn percent(digits: &str, span: Span) -> Result<(u128, u128), ParseError> {
-    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
-    let too_precise = || ParseError::new(span, format!("`{digits}%` is too precise"));
-    let scale = 10u128
-        .checked_pow(u32::try_from(fraction.len()).map_err(|_| too_precise())?)
-        .ok_or_else(too_precise)?;
-    let numerator = format!("{whole}{fraction}")
-        .parse::<u128>()
-        .map_err(|_| too_precise())?;
-    Ok((numerator, scale.checked_mul(100).ok_or_else(too_precise)?))
-}
-
-fn gcd(mut a: u128, mut b: u128) -> u128 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a.max(1)
 }

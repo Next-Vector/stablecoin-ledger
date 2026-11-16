@@ -271,6 +271,15 @@ set_tx_meta("order_id", "8812")
 
 The DSL is a separate crate, `ledger-script` (a hand-written lexer and recursive-descent parser), depending only on `ledger-core`. The grammar is documented in `crates/ledger-script/src/parser.rs`; the parser also checks that every variable is declared once and used where its type fits, that `remaining` is the last destination, and that a literal portion (`12.5%`, `1/3`) is at most 100%. Lines may carry `//` comments; strings accept the escapes `\"`, `\\` and `\n`.
 
+Compilation (`ledger_script::compile`) is a pure function of the script, the variable values and the current balances, so it can run inside the DB transaction that applies its result:
+
+- Variable values are strings: account `users:42:wallet`, asset `USDC@ethereum/6`, monetary `USDC@ethereum/6 100`, number `100`, portion `12.5%` or `1/3`, string anything. Every declared variable needs a value and undeclared ones are rejected. Inside an address, `{$x}` takes an account, string or number value; the resulting address is validated.
+- Statements run in order, and each `send` sees the balances the previous ones left. All postings form one transaction.
+- Sources are drawn in order: each gives `min(still needed, max, balance + allowed overdraft)`. `@world` is unbounded; any other account goes below zero only with `allowing overdraft up to`, and the ledger still rejects a negative balance on accounts that may not hold one (section 4.3). Caps and overdrafts must be in the asset being sent.
+- Destinations: each portion gets `⌊amount × portion⌋`. `remaining` (at most one, last) takes the rest; without it the portions must sum to exactly 100% and the leftover base units go one each to the non-zero portions in order. Portion denominators are at most 10^18, and portions whose exact sum overflows `u128` are rejected.
+- Sources pay destinations in order (the first source pays the first destinations until it runs out). A move from an account to itself is skipped. More than 256 postings, or none, is an error.
+- `set_tx_meta` values are stored as given; a later key overwrites an earlier one.
+
 ## 6. Non-functional requirements
 
 Correctness takes priority over speed: no optimization is accepted if it weakens the invariants of section 4. The figures below are targets; actual numbers are recorded by benchmarks in the README.

@@ -71,10 +71,12 @@ Script {
                 destination: [
                     DestinationItem {
                         share: Portion(
-                            Ratio {
-                                numerator: 1,
-                                denominator: 100,
-                            },
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 100,
+                                },
+                            ),
                         ),
                         account: Template(
                             [

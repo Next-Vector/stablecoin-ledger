@@ -42,10 +42,12 @@ Script {
                 destination: [
                     DestinationItem {
                         share: Portion(
-                            Ratio {
-                                numerator: 1,
-                                denominator: 10,
-                            },
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 10,
+                                },
+                            ),
                         ),
                         account: Template(
                             [
@@ -60,10 +62,12 @@ Script {
                     },
                     DestinationItem {
                         share: Portion(
-                            Ratio {
-                                numerator: 1,
-                                denominator: 8,
-                            },
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 8,
+                                },
+                            ),
                         ),
                         account: Template(
                             [
@@ -78,10 +82,12 @@ Script {
                     },
                     DestinationItem {
                         share: Portion(
-                            Ratio {
-                                numerator: 1,
-                                denominator: 3,
-                            },
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 3,
+                                },
+                            ),
                         ),
                         account: Template(
                             [
@@ -99,10 +105,12 @@ Script {
                     },
                     DestinationItem {
                         share: Portion(
-                            Ratio {
-                                numerator: 1,
-                                denominator: 2,
-                            },
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 2,
+                                },
+                            ),
                         ),
                         account: Template(
                             [
