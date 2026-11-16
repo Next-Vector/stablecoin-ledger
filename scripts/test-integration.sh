@@ -5,4 +5,4 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 touch ./.env.integration.local
 set -a; source ./.env.integration; source ./.env.integration.local; set +a
-cargo test --workspace --features ledger-store/integration,ledger-api/integration --locked -- --test-threads=1 "$@"
+cargo test --workspace --features ledger-store/integration,ledger-api/integration,ledger-bench/integration --locked -- --test-threads=1 "$@"

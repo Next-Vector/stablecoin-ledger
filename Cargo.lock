@@ -1179,6 +1179,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ledger-bench"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "ledger-api",
+ "ledger-store",
+ "reqwest",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "ledger-core"
 version = "0.0.0"
 dependencies = [

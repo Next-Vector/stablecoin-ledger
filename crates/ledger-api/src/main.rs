@@ -20,6 +20,7 @@ use ledger_api::{AppState, app};
 use ledger_core::{AccountAddress, AssetId};
 use ledger_store::{PgStore, Role};
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage: ledger-api [serve | migrate | rebuild-balances | \
@@ -149,7 +150,10 @@ fn init_tracing(format: LogFormat) {
 }
 
 async fn serve(config: &Config) -> Result<(), Failure> {
-    let pool = PgPool::connect(&config.database_url).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(config.database_max_connections)
+        .connect(&config.database_url)
+        .await?;
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let dispatcher = Dispatcher::new(

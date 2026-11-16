@@ -67,6 +67,16 @@ ledger-api allow-negative platform:gas:ethereum            # let a system accoun
 
 In the stablecoin-dev stack run them inside the container: `./run-dev exec ledger cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
 
+## Benchmarks
+
+`crates/ledger-bench` is a load generator for `POST /v1/transactions`: it seeds 10,000 wallets and sends 1-unit transfers between uniformly chosen pairs, measuring throughput at full speed (NFR-04) and latency at a fixed rate (NFR-05). `scripts/bench.sh` builds a release `ledger-api`, runs it against a throwaway database and benchmarks it:
+
+```sh
+BENCH_DATABASE_URL=postgres://ledger:ledger@localhost:5432/bench ./scripts/bench.sh --duration 30 --rate 1100
+```
+
+The script resets that database. Run it on an otherwise idle machine — the server, PostgreSQL and the generator compete for the same CPUs. Results will be published here once measured on dedicated hardware.
+
 ## Checks
 
 The same gates run in the pre-commit hook and in CI:
