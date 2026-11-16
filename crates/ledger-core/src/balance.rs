@@ -36,6 +36,15 @@ impl Balance {
         self.negative
     }
 
+    /// How much can leave the account while it stays at or above `-overdraft`.
+    pub fn spendable(self, overdraft: u128) -> u128 {
+        if self.negative {
+            overdraft.saturating_sub(self.magnitude)
+        } else {
+            self.magnitude.saturating_add(overdraft)
+        }
+    }
+
     /// Adds `amount` (money arriving at the account).
     pub fn credit(self, amount: u128) -> Result<Self, BalanceError> {
         self.shift(amount, false)
@@ -225,5 +234,17 @@ mod tests {
         assert!(minus_five < minus_one);
         assert!(minus_one < Balance::ZERO);
         assert!(Balance::ZERO < three);
+    }
+
+    #[test]
+    fn spendable_counts_the_allowed_overdraft() {
+        let positive = Balance::ZERO.credit(5).unwrap();
+        let negative = Balance::ZERO.debit(2).unwrap();
+        assert_eq!(positive.spendable(0), 5);
+        assert_eq!(positive.spendable(3), 8);
+        assert_eq!(negative.spendable(0), 0);
+        assert_eq!(negative.spendable(5), 3);
+        assert_eq!(negative.spendable(1), 0);
+        assert_eq!(positive.spendable(u128::MAX), u128::MAX);
     }
 }

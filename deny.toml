@@ -5,7 +5,7 @@
 all-features = true
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
 # Workspace crates are BUSL-1.1 and never published; do not license-check them.
 private = { ignore = true }
 

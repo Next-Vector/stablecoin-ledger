@@ -56,6 +56,10 @@ pub struct AccountPattern(String);
 impl AccountPattern {
     const WILDCARD: &'static str = "*";
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn matches(&self, address: &AccountAddress) -> bool {
         let mut pattern = self.0.split(':');
         let mut segments = address.as_str().split(':');

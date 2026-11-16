@@ -19,7 +19,7 @@ flowchart TB
         store["ledger-store<br/>atomic DB transactions"]
     end
 
-    pg[(PostgreSQL 16)]
+    pg[(PostgreSQL 18)]
 
     client -- "REST /v1" --> api
     api -- "signed webhooks" --> client
@@ -178,7 +178,7 @@ flowchart LR
 |---|---|
 | Language / runtime | Rust stable (edition 2024), `tokio` |
 | HTTP | `axum`, `tower`, `utoipa` (OpenAPI 3.1) |
-| Storage | PostgreSQL 16, `sqlx` with compile-time checked queries |
+| Storage | PostgreSQL 18, `sqlx` with compile-time checked queries |
 | Blockchain | `alloy` (EVM); anvil locally, Ethereum Sepolia as the first real network |
 | Observability | `tracing` (JSON logs), OpenTelemetry, Prometheus metrics |
 | Tests | `proptest`, `testcontainers`, `criterion`, anvil, `wiremock`, `cargo-fuzz` |

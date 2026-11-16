@@ -1,0 +1,1 @@
+send [USDC@ethereum 10] (source = @world destination = @a)

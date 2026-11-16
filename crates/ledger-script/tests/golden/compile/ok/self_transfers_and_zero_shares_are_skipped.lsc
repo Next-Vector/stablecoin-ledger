@@ -1,0 +1,8 @@
+send [USDC@ethereum/6 10] (
+  source = @users:1:wallet
+  destination = {
+    0% to @a
+    50% to @users:1:wallet
+    remaining to @b
+  }
+)

@@ -1,0 +1,2 @@
+world -> users:1:wallet 10 USDC@ethereum/6
+users:1:wallet -> users:2:wallet 10 USDC@ethereum/6

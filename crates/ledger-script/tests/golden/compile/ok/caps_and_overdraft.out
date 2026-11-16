@@ -1,0 +1,2 @@
+users:1:wallet -> merchants:1:wallet 2 USDC@ethereum/6
+users:2:wallet -> merchants:1:wallet 7 USDC@ethereum/6

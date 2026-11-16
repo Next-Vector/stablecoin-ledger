@@ -1,0 +1,126 @@
+Script {
+    vars: [
+        VarDecl {
+            name: "from",
+            ty: Account,
+        },
+        VarDecl {
+            name: "coin",
+            ty: Asset,
+        },
+        VarDecl {
+            name: "fee",
+            ty: Monetary,
+        },
+        VarDecl {
+            name: "units",
+            ty: Number,
+        },
+        VarDecl {
+            name: "share",
+            ty: Portion,
+        },
+        VarDecl {
+            name: "order",
+            ty: String,
+        },
+    ],
+    statements: [
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Var(
+                        "coin",
+                    ),
+                    amount: Var(
+                        "units",
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Var(
+                            "from",
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Portion(
+                            Var(
+                                "share",
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "orders",
+                                ),
+                                Var(
+                                    "order",
+                                ),
+                                Text(
+                                    "escrow",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Var(
+                                    "units",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+        Send(
+            Send {
+                amount: Var(
+                    "fee",
+                ),
+                source: [
+                    SourceItem {
+                        account: Var(
+                            "from",
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "platform",
+                                ),
+                                Text(
+                                    "fees",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+        SetTxMeta {
+            key: "order",
+            value: Var(
+                "order",
+            ),
+        },
+    ],
+}

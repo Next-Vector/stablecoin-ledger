@@ -1,0 +1,120 @@
+Script {
+    vars: [],
+    statements: [
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Literal(
+                        AssetId {
+                            symbol: "USDC",
+                            network: "ethereum",
+                            decimals: 6,
+                        },
+                    ),
+                    amount: Literal(
+                        5,
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "merchants",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Literal(
+                        AssetId {
+                            symbol: "USDC",
+                            network: "ethereum",
+                            decimals: 6,
+                        },
+                    ),
+                    amount: Literal(
+                        1,
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "platform",
+                                ),
+                                Text(
+                                    "fees",
+                                ),
+                            ],
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+        SetTxMeta {
+            key: "note",
+            value: Text(
+                "say \"thanks\"\\n",
+            ),
+        },
+        SetTxMeta {
+            key: "reason",
+            value: Text(
+                "line one\nline two",
+            ),
+        },
+    ],
+}

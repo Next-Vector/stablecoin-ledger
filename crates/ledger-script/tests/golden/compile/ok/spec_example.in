@@ -1,0 +1,5 @@
+var buyer = 42
+var merchant = 7
+var price = USDC@ethereum/6 100000000
+balance users:42:bonus USDC@ethereum/6 3000000
+balance users:42:wallet USDC@ethereum/6 200000000

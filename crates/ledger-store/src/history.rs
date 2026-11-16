@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ledger_core::{AccountAddress, AssetId, Metadata, Posting, StoreError, Transaction, TxId};
 
-use crate::{PgStore, backend};
+use crate::{PgStore, backend, posting, tx_id};
 
 /// Every field narrows the result; `None` means no restriction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,6 +69,8 @@ pub struct RecordedTransaction {
     pub transaction: Transaction,
     /// The transaction this one reverses, if it is a reversal.
     pub reverts: Option<TxId>,
+    /// The reversal of this transaction, if it has been reverted.
+    pub reverted_by: Option<TxId>,
     /// Unix time (seconds) when the transaction was written.
     pub created_at: i64,
 }
@@ -80,9 +82,29 @@ pub struct HistoryPage {
     pub next_cursor: Option<TxId>,
 }
 
-type HeaderRow = (i64, Option<i64>, i64, Vec<String>, Vec<String>);
+type HeaderRow = (i64, Option<i64>, Option<i64>, i64, Vec<String>, Vec<String>);
+
+/// The columns of a [`HeaderRow`], selected from `transactions AS t`.
+const HEADER_COLUMNS: &str = "t.id, t.reverts, \
+    (SELECT r.id FROM transactions AS r WHERE r.reverts = t.id), \
+    floor(extract(epoch FROM t.created_at))::bigint, \
+    coalesce((SELECT array_agg(key ORDER BY key) FROM jsonb_each_text(t.metadata)), '{}'), \
+    coalesce((SELECT array_agg(value ORDER BY key) FROM jsonb_each_text(t.metadata)), '{}')";
 
 impl PgStore {
+    /// A single transaction by id, or `None` if it does not exist.
+    pub async fn transaction(&self, id: TxId) -> Result<Option<RecordedTransaction>, StoreError> {
+        let id = i64::try_from(id.0).map_err(backend)?;
+        let header: Option<HeaderRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {HEADER_COLUMNS} FROM transactions AS t WHERE t.id = $1"
+        )))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(self.hydrate(header.into_iter().collect()).await?.pop())
+    }
+
     pub async fn transactions(
         &self,
         filter: &HistoryFilter,
@@ -98,10 +120,8 @@ impl PgStore {
             .map_err(backend)?;
 
         // One row more than the page size tells whether an older page exists.
-        let mut headers: Vec<HeaderRow> = sqlx::query_as(
-            "SELECT t.id, t.reverts, floor(extract(epoch FROM t.created_at))::bigint, \
-                    coalesce((SELECT array_agg(key ORDER BY key) FROM jsonb_each_text(t.metadata)), '{}'), \
-                    coalesce((SELECT array_agg(value ORDER BY key) FROM jsonb_each_text(t.metadata)), '{}') \
+        let mut headers: Vec<HeaderRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {HEADER_COLUMNS} \
              FROM transactions AS t \
              WHERE ($1::bigint IS NULL OR t.id < $1) \
                AND ($2::bigint IS NULL OR t.created_at >= to_timestamp($2)) \
@@ -115,8 +135,8 @@ impl PgStore {
                AND ($7::text IS NULL \
                     OR EXISTS (SELECT 1 FROM postings AS p WHERE p.tx_id = t.id AND p.asset = $7)) \
              ORDER BY t.id DESC \
-             LIMIT $8",
-        )
+             LIMIT $8"
+        )))
         .bind(before)
         .bind(filter.from)
         .bind(filter.to)
@@ -132,6 +152,20 @@ impl PgStore {
         let has_more = headers.len() > page.limit as usize;
         headers.truncate(page.limit as usize);
 
+        let items = self.hydrate(headers).await?;
+        let next_cursor = if has_more {
+            items.last().map(|item| item.id)
+        } else {
+            None
+        };
+        Ok(HistoryPage { items, next_cursor })
+    }
+
+    /// Loads the postings of `headers` and assembles the transactions, in the same order.
+    async fn hydrate(
+        &self,
+        headers: Vec<HeaderRow>,
+    ) -> Result<Vec<RecordedTransaction>, StoreError> {
         let ids: Vec<i64> = headers.iter().map(|header| header.0).collect();
         let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
             "SELECT tx_id, source, destination, asset, amount::text FROM postings \
@@ -143,18 +177,16 @@ impl PgStore {
         .map_err(backend)?;
         let mut postings: BTreeMap<i64, Vec<Posting>> = BTreeMap::new();
         for (tx_id, source, destination, asset, amount) in rows {
-            let posting = Posting::new(
-                source.parse().map_err(backend)?,
-                destination.parse().map_err(backend)?,
-                amount.parse().map_err(backend)?,
-                asset.parse().map_err(backend)?,
-            )
-            .map_err(backend)?;
-            postings.entry(tx_id).or_default().push(posting);
+            postings.entry(tx_id).or_default().push(posting(
+                &source,
+                &destination,
+                &asset,
+                &amount,
+            )?);
         }
 
         let mut items = Vec::with_capacity(headers.len());
-        for (id, reverts, created_at, keys, values) in headers {
+        for (id, reverts, reverted_by, created_at, keys, values) in headers {
             let metadata: Metadata = keys.into_iter().zip(values).collect();
             let transaction = Transaction::new(postings.remove(&id).unwrap_or_default(), metadata)
                 .map_err(backend)?;
@@ -162,19 +194,10 @@ impl PgStore {
                 id: tx_id(id)?,
                 transaction,
                 reverts: reverts.map(tx_id).transpose()?,
+                reverted_by: reverted_by.map(tx_id).transpose()?,
                 created_at,
             });
         }
-
-        let next_cursor = if has_more {
-            items.last().map(|item| item.id)
-        } else {
-            None
-        };
-        Ok(HistoryPage { items, next_cursor })
+        Ok(items)
     }
-}
-
-fn tx_id(id: i64) -> Result<TxId, StoreError> {
-    u64::try_from(id).map(TxId).map_err(backend)
 }

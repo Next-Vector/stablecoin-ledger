@@ -1,0 +1,169 @@
+Script {
+    vars: [
+        VarDecl {
+            name: "partner_cut",
+            ty: Portion,
+        },
+    ],
+    statements: [
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Literal(
+                        AssetId {
+                            symbol: "USDC",
+                            network: "ethereum",
+                            decimals: 6,
+                        },
+                    ),
+                    amount: Literal(
+                        1000,
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Portion(
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 10,
+                                },
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "platform",
+                                ),
+                                Text(
+                                    "fees",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Portion(
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 8,
+                                },
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "platform",
+                                ),
+                                Text(
+                                    "tax",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Portion(
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 3,
+                                },
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "partners",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Portion(
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 2,
+                                },
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "partners",
+                                ),
+                                Text(
+                                    "2",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Portion(
+                            Var(
+                                "partner_cut",
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "partners",
+                                ),
+                                Text(
+                                    "3",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "merchants",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+    ],
+}

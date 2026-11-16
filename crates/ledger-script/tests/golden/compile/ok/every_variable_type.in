@@ -1,0 +1,7 @@
+var from = users:9:wallet
+var coin = USDC@ethereum/6
+var fee = USDC@ethereum/6 3
+var units = 1000
+var share = 12.5%
+var order = a1
+balance users:9:wallet USDC@ethereum/6 2000

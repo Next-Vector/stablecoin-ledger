@@ -1,0 +1,7 @@
+send [USDC@ethereum/6 9] (
+  source = {
+    @users:1:wallet max [USDC@ethereum/6 2]
+    @users:2:wallet allowing overdraft up to [USDC@ethereum/6 10]
+  }
+  destination = @merchants:1:wallet
+)

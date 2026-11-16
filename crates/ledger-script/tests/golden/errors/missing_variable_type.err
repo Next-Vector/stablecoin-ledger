@@ -1,0 +1,1 @@
+line 2, column 3: expected a type (account, asset, monetary, number, portion, string) or `}`, found `$buyer`

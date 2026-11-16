@@ -17,8 +17,13 @@ integration = []
 
 [dependencies]
 ledger-core = { path = "../ledger-core" }
+ledger-script = { path = "../ledger-script" }
 sqlx.workspace = true
 thiserror.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
@@ -41,4 +46,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "history"
+required-features = ["integration"]
+
+[[test]]
+name = "operations"
 required-features = ["integration"]

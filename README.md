@@ -44,14 +44,15 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 ## Dev stack
 
 ```sh
-./run-dev up -d                # PostgreSQL + anvil
+./run-dev up -d                # PostgreSQL + anvil + ledger-api (first start compiles, ~2 min)
 ./scripts/check-dev-stack.sh   # smoke check
 ./run-dev down                 # stop
 ```
 
 | Service | Address |
 |---|---|
-| PostgreSQL 16 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
+| ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/docs/`, spec at `/openapi.json` |
+| PostgreSQL 18 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
 | anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
 
 Defaults live in `.env`; put host-specific overrides in `.env.local` (git-ignored). `.env.example` documents every key.
@@ -64,6 +65,17 @@ curl -X POST -H 'Content-Type: application/json' \
   http://anvil.stablecoin-ledger.localhost
 ```
 
+## API keys
+
+Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
+
+```sh
+ledger-api create-api-key --role write --name merchant-backend   # prints the key once
+ledger-api revoke-api-key <key_id>
+```
+
+In the dev stack run them inside the container: `./run-dev exec ledger-api cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
+
 ## Checks
 
 The same gates run in the pre-commit hook and in CI:
@@ -75,6 +87,17 @@ cargo test --workspace --locked
 cargo audit                               # CI only
 cargo deny check licenses bans sources    # CI only
 ```
+
+## Fuzzing
+
+The ledger-script DSL has two cargo-fuzz targets (nightly only; `rustup toolchain install nightly --profile minimal && cargo install --locked cargo-fuzz`):
+
+```sh
+./scripts/fuzz.sh parse 3600     # parser: never panics, errors point inside the text
+./scripts/fuzz.sh compile 3600   # compiler: deterministic, moves only the accounts it reports to be locked
+```
+
+The `Fuzz` workflow runs both for 10 minutes every week and on demand.
 
 ## License
 
