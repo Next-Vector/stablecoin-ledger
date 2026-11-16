@@ -1,5 +1,6 @@
 //! REST API for the ledger: router, error envelope, health probes, metrics and OpenAPI docs.
 
+mod auth;
 pub mod config;
 mod error;
 mod health;
@@ -19,6 +20,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+pub use auth::protect;
 pub use error::{ApiError, ErrorBody};
 
 /// OWASP API4: bounded request bodies and handler time.

@@ -19,6 +19,10 @@ integration = []
 ledger-core = { path = "../ledger-core" }
 sqlx.workspace = true
 thiserror.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

@@ -65,6 +65,17 @@ curl -X POST -H 'Content-Type: application/json' \
   http://anvil.stablecoin-ledger.localhost
 ```
 
+## API keys
+
+Every `/v1` route needs `Authorization: Bearer <key>`; `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
+
+```sh
+ledger-api create-api-key --role write --name merchant-backend   # prints the key once
+ledger-api revoke-api-key <key_id>
+```
+
+In the dev stack run them inside the container: `./run-dev exec ledger-api cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
+
 ## Checks
 
 The same gates run in the pre-commit hook and in CI:

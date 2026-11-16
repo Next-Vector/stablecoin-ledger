@@ -39,4 +39,8 @@ utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 http-body-util = "0.1.5"
+getrandom = "0.4.3"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+hex = "0.4.3"
 proptest = "1.12.0"

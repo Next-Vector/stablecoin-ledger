@@ -1,7 +1,12 @@
 //! PostgreSQL storage for the ledger journal and materialized balances.
 
+mod api_keys;
 mod history;
 
+pub use api_keys::{
+    ApiKeyError, AuthFailure, Authenticated, GeneratedKey, Role, authenticate, create_api_key,
+    revoke_api_key,
+};
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
 
 use std::collections::{BTreeSet, HashMap, HashSet};

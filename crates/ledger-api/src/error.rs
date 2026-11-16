@@ -52,6 +52,15 @@ impl ApiError {
         )
     }
 
+    /// An unexpected failure; the details go to the logs, never to the client.
+    pub fn internal() -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "an internal error occurred",
+        )
+    }
+
     pub fn method_not_allowed() -> Self {
         Self::new(
             StatusCode::METHOD_NOT_ALLOWED,

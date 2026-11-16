@@ -41,3 +41,11 @@ required-features = ["integration"]
 [[test]]
 name = "readiness"
 required-features = ["integration"]
+
+[[test]]
+name = "auth"
+required-features = ["integration"]
+
+[[test]]
+name = "api_keys_cli"
+required-features = ["integration"]
