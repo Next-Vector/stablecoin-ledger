@@ -52,7 +52,7 @@ The ledger only keeps accounts and stays independent of any chain. Everything th
 - REST API with idempotency;
 - webhooks for journal, deposit and withdrawal events, with guaranteed delivery and signatures;
 - registries of assets and deposit addresses (FR-20) for the transaction registry;
-- metrics, logging, Docker Compose for local runs.
+- metrics, logging, a `Dockerfile`; the local stack of the whole system lives in the private `stablecoin-dev` repository.
 
 **After the MVP:**
 
@@ -354,7 +354,7 @@ stablecoin-ledger/          # public repository
 │   ├── ledger-store     # PostgreSQL: journal, balances, migrations
 │   └── ledger-api       # REST API + webhook-dispatcher
 ├── benches/
-└── docker-compose.yml   # PostgreSQL + anvil + services
+└── .docker/             # integration-test PostgreSQL; the dev stack is in stablecoin-dev
 
 stablecoin-chain-watcher/    # private: EVM indexer (reports events to the registry), mock USDC
 stablecoin-tx-registry/      # private: on-chain transactions and statuses, quorum, ledger postings, reconciliation
@@ -605,7 +605,7 @@ The MVP is accepted when every item below passes in CI on every commit to `main`
 - [ ] After a full e2e scenario (deposits, transfers, withdrawals) reconciliation shows a difference of 0.
 - [ ] When one of the two RPC sources returns a different block hash or is unavailable, the deposit stays in pending and an alert is raised; after recovery it is finalized exactly once.
 - [ ] Benchmarks confirm NFR-04 and NFR-05; results are published in the README.
-- [ ] `docker compose up` brings up the whole system with a demo script in one command.
+- [ ] `./run-dev up -d` in `stablecoin-dev` brings up the whole system, with a demo script, in one command.
 - [ ] DSL: golden tests (script → expected postings) for every language construct, a property test for FR-63 rounding, and 1 hour of parser fuzzing (`cargo-fuzz`) without panics.
 
 ## 11. Implementation stages
