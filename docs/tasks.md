@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 7 milestones and 46 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 45 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -10,7 +10,7 @@ MVP work broken into 7 milestones and 46 tasks (the blockchain milestones M6 and
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
 | [M5 · deposit registry](#m5--deposit-registry) | 11 |
-| [M8 · Polish](#m8--polish) | 3 |
+| [M8 · Polish](#m8--polish) | 2 |
 
 ## M0 · Scaffold
 
@@ -355,6 +355,7 @@ The ledger only keeps accounts and stays independent of any chain, so the blockc
 | #39 | Fault-injection tests for withdrawals | stablecoin-withdrawer#4 |
 | #40 | Daily reconciliation | stablecoin-tx-registry#3 |
 | #41 | Mismatch alerts, withdrawal halt, metrics | stablecoin-tx-registry#4 |
+| #43 | One-command demo of the whole system (done: `scripts/demo.sh`) | stablecoin-dev#2 |
 
 ## M8 · Polish
 
@@ -366,13 +367,6 @@ Benchmarks, demo, diagrams, write-up. Spec stage 8.
 - **Requirements:** NFR-04, NFR-05
 - **Scope:** criterion + k6/oha: ≥ 2,000 transfers/s on one PostgreSQL (8 vCPU); p99 `POST /transactions` < 50 ms at 50% of peak.
 - **Done when:** Results published in the README.
-
-### 43. One-command demo with docker compose
-
-- [ ] Done
-- **Requirements:** §10
-- **Scope:** `docker compose up` brings up the whole system and runs a demo script (deposit, transfer, withdrawal, reconciliation).
-- **Done when:** Demo runs end to end on a clean machine.
 
 ### 44. Architecture diagrams and write-up article
 
