@@ -148,6 +148,9 @@ impl From<HoldError> for ApiError {
             )
             .with_details(json!({ "requested": requested.to_string(), "held": held.to_string() })),
             HoldError::ZeroAmount => Self::invalid_field("amount", "must be greater than zero"),
+            HoldError::NoDestinations | HoldError::TooManyDestinations(_) => {
+                Self::invalid_field("destinations", message)
+            }
             HoldError::Posting(posting) => Self::validation(posting.to_string()),
             HoldError::Apply(rule) => rule.into(),
         }

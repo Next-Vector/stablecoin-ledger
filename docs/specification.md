@@ -127,7 +127,7 @@ Rules:
 ### 4.4 Holds
 
 - `hold(account, amount, asset, expires_at?)` moves funds to the technical account `holds:{hold_id}`.
-- `capture(hold_id, destination, amount ≤ hold)` spends the reserved funds; the remainder returns to the owner.
+- `capture(hold_id, destination, amount ≤ hold)` spends the reserved funds; the remainder returns to the owner. A capture may also split the funds between several destinations in one transaction (`destinations: [{destination, amount}, …]`, at most 255, together ≤ hold), e.g. a withdrawal's amount to `chain:{net}:in_flight` and its fee to `platform:fees`.
 - `void(hold_id)` returns everything; an expired hold is voided automatically.
 - Every hold operation is an ordinary journal transaction, so invariant 4.3.4 holds.
 

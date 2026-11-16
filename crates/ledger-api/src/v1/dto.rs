@@ -259,11 +259,22 @@ pub struct CreateHoldRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureHoldRequest {
-    pub destination: String,
+    /// The single destination; with `amount`. Use either this pair or `destinations`.
+    pub destination: Option<String>,
     /// At most the held amount; the rest returns to the owner.
-    pub amount: String,
+    pub amount: Option<String>,
+    /// Several destinations captured in one transaction (at most 255), e.g. a withdrawal's
+    /// amount and fee; together at most the held amount, the rest returns to the owner.
+    pub destinations: Option<Vec<CaptureDestination>>,
     #[serde(default)]
     pub metadata: Metadata,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureDestination {
+    pub destination: String,
+    pub amount: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]

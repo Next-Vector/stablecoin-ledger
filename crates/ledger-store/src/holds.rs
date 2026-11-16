@@ -74,6 +74,19 @@ impl PgStore {
         metadata: Metadata,
         key: Option<&IdempotencyKey>,
     ) -> Result<(Hold, TxId), OpError<HoldError>> {
+        self.capture_to(id, &[(destination, amount)], metadata, key)
+            .await
+    }
+
+    /// Sends each amount of an active hold to its destination (together ≤ the held amount) and
+    /// returns the rest to the owner, in one transaction.
+    pub async fn capture_to(
+        &self,
+        id: HoldId,
+        destinations: &[(AccountAddress, u128)],
+        metadata: Metadata,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<(Hold, TxId), OpError<HoldError>> {
         let mut db = self.pool.begin().await?;
         let (hold, now) = load_hold(&mut db, id, true)
             .await?
@@ -85,7 +98,7 @@ impl PgStore {
             )));
         }
         let capture = hold
-            .capture(destination, amount, metadata)
+            .capture_to(destinations, metadata)
             .map_err(OpError::Rejected)?;
         let settled = settle(&mut db, hold, &capture, HoldStatus::Captured, key).await?;
         db.commit().await?;
