@@ -5,6 +5,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
+use ledger_api::ssrf::UrlPolicy;
 use ledger_api::{AppState, app};
 use ledger_store::{PgStore, Role, SecretBox, create_api_key};
 use serde_json::{Value, json};
@@ -23,7 +24,12 @@ fn secrets() -> SecretBox {
 }
 
 impl Api {
+    /// Receivers anywhere, as in development: these tests are about subscriptions, not SSRF.
     async fn new() -> Self {
+        Self::with_policy(UrlPolicy::AllowPrivate).await
+    }
+
+    async fn with_policy(policy: UrlPolicy) -> Self {
         let url = std::env::var("DATABASE_URL")
             .expect("DATABASE_URL must point at the run-integration database");
         let pool = PgPool::connect(&url).await.unwrap();
@@ -41,7 +47,7 @@ impl Api {
             .unwrap()
             .plaintext;
         Self {
-            router: app(AppState::new(pool.clone(), secrets())),
+            router: app(AppState::new(pool.clone(), secrets()).with_url_policy(policy)),
             pool,
             admin,
             write,
@@ -338,4 +344,48 @@ async fn creation_and_rotation_replay_under_an_idempotency_key() {
         2,
         "a replay must not rotate twice"
     );
+}
+
+#[tokio::test]
+async fn in_production_urls_reaching_private_addresses_are_rejected() {
+    let api = Api::with_policy(UrlPolicy::PublicOnly).await;
+    for url in [
+        "http://127.0.0.1/hooks",
+        "http://localhost:8080/hooks",
+        "http://2130706433/hooks",
+        "http://10.1.2.3/hooks",
+        "http://172.16.0.1/hooks",
+        "http://192.168.1.1/hooks",
+        "http://100.64.0.1/hooks",
+        "http://169.254.169.254/latest/meta-data",
+        "http://0.0.0.0/hooks",
+        "http://[::1]/hooks",
+        "http://[fe80::1]/hooks",
+        "http://[fd00::1]/hooks",
+        "http://[::ffff:127.0.0.1]/hooks",
+        "https://receiver.invalid/hooks",
+    ] {
+        let (status, body) = api
+            .admin(
+                Method::POST,
+                "/v1/webhooks",
+                Some(json!({"url": url, "event_types": ["transaction.created"]})),
+            )
+            .await;
+        assert_error(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+        assert_eq!(body["error"]["details"]["field"], "url", "{url}: {body}");
+    }
+
+    api.create("https://93.184.215.14/hooks", &["transaction.created"])
+        .await;
+    let (status, body) = api
+        .admin(
+            Method::PATCH,
+            "/v1/webhooks/1",
+            Some(json!({"url": "http://127.0.0.1:9000/hooks"})),
+        )
+        .await;
+    assert_error(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    let (_, listed) = api.admin(Method::GET, "/v1/webhooks", None).await;
+    assert_eq!(listed["items"][0]["url"], "https://93.184.215.14/hooks");
 }

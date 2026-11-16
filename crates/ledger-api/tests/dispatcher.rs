@@ -13,6 +13,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use hmac::{Hmac, KeyInit, Mac};
 use ledger_api::dispatcher::{Dispatcher, DispatcherConfig};
+use ledger_api::ssrf::UrlPolicy;
 use ledger_core::{AccountAddress, AssetId, LedgerStore, Metadata, Posting, Transaction};
 use ledger_store::{AttemptOutcome, EventType, PgStore, SecretBox};
 use serde_json::Value;
@@ -147,6 +148,8 @@ impl World {
                 lease: Duration::from_secs(5),
                 batch: 50,
                 idle_wait: Duration::from_millis(10),
+                // The receiver listens on loopback.
+                url_policy: UrlPolicy::AllowPrivate,
             },
         )
         .unwrap()
@@ -373,6 +376,7 @@ async fn concurrent_dispatchers_never_deliver_the_same_event_twice() {
                 secrets(),
                 DispatcherConfig {
                     batch: 3,
+                    url_policy: UrlPolicy::AllowPrivate,
                     ..DispatcherConfig::default()
                 },
             )
@@ -468,6 +472,7 @@ async fn a_delivery_lost_with_a_crashed_dispatcher_is_retried_after_its_lease() 
                 succeeded: false,
                 status_code: Some(500),
                 error: Some("late".to_owned()),
+                latency: Duration::ZERO,
             },
         )
         .await
@@ -490,4 +495,58 @@ async fn only_subscriptions_present_when_the_event_happens_receive_it() {
     assert_eq!(world.dispatcher().run_once().await.unwrap(), 0);
     world.deposit(2).await;
     assert_eq!(world.dispatcher().run_once().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn in_production_private_receivers_are_never_contacted() {
+    let world = World::new().await;
+    world
+        .subscribe("a", &[EventType::TransactionCreated], true)
+        .await;
+    world.deposit(1).await;
+    let production = Dispatcher::new(
+        world.pool.clone(),
+        secrets(),
+        DispatcherConfig {
+            timeout: Duration::from_millis(500),
+            ..DispatcherConfig::default()
+        },
+    )
+    .unwrap();
+    let last_error = || async {
+        let (error,): (Option<String>,) =
+            sqlx::query_as("SELECT last_error FROM webhook_deliveries")
+                .fetch_one(&world.pool)
+                .await
+                .unwrap();
+        error.unwrap_or_default()
+    };
+
+    // An address in the URL itself.
+    production.run_once().await.unwrap();
+    assert!(world.inbox.received().is_empty());
+    let (status, attempts, code, _) = world.delivery().await;
+    assert_eq!((status.as_str(), attempts, code), ("pending", 1, None));
+    let error = last_error().await;
+    assert!(error.contains("not allowed"), "{error}");
+
+    // A name that resolves to loopback, which a check at subscription time alone would miss.
+    let port = world.url.rsplit(':').next().unwrap();
+    sqlx::query("UPDATE webhook_endpoints SET url = $1")
+        .bind(format!("http://localhost:{port}/a"))
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    world.make_due().await;
+    production.run_once().await.unwrap();
+    assert!(world.inbox.received().is_empty());
+    let (_, attempts, code, _) = world.delivery().await;
+    assert_eq!((attempts, code), (2, None));
+    let error = last_error().await;
+    assert!(error.contains("not allowed"), "{error}");
+
+    // The same receiver is reachable when private addresses are allowed (development).
+    world.make_due().await;
+    world.dispatcher().run_once().await.unwrap();
+    assert_eq!(world.inbox.received().len(), 1);
 }

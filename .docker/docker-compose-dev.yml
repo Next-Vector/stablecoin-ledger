@@ -41,6 +41,7 @@ services:
       BIND_ADDR: 0.0.0.0:8080
       LOG_FORMAT: json
       WEBHOOK_SECRET_KEY: ${WEBHOOK_SECRET_KEY}
+      WEBHOOK_ALLOW_PRIVATE_URLS: ${WEBHOOK_ALLOW_PRIVATE_URLS:-false}
     volumes:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml

@@ -49,6 +49,11 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route(
             "/v1/webhooks/{id}/rotate-secret",
             post(webhooks::rotate_secret),
+        )
+        .route("/v1/webhooks/{id}/deliveries", get(webhooks::delivery_log))
+        .route(
+            "/v1/webhook-events/{id}/redeliver",
+            post(webhooks::redeliver),
         );
     protect(read, state, Role::Read)
         .merge(protect(write, state, Role::Write))

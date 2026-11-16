@@ -216,6 +216,11 @@ impl From<WebhookError> for ApiError {
                 "WEBHOOK_NOT_FOUND",
                 "no webhook subscription has this id",
             ),
+            WebhookError::EventNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "WEBHOOK_EVENT_NOT_FOUND",
+                "no webhook event has this id",
+            ),
         }
     }
 }

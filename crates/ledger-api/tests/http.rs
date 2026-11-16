@@ -122,6 +122,8 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
         "/v1/webhooks",
         "/v1/webhooks/{id}",
         "/v1/webhooks/{id}/rotate-secret",
+        "/v1/webhooks/{id}/deliveries",
+        "/v1/webhook-events/{id}/redeliver",
     ] {
         let operations = spec["paths"][path]
             .as_object()
@@ -163,7 +165,7 @@ async fn documents_the_idempotency_key_on_every_mutating_route() {
             assert!(operation["responses"]["409"].is_object(), "{method} {path}");
         }
     }
-    assert_eq!(mutating, 12);
+    assert_eq!(mutating, 13);
 }
 
 #[tokio::test]

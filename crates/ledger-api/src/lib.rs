@@ -7,6 +7,7 @@ mod error;
 mod extract;
 mod health;
 mod metrics;
+pub mod ssrf;
 mod v1;
 
 use std::time::Duration;
@@ -17,6 +18,7 @@ use axum::routing::get;
 use ledger_store::{PgStore, SecretBox};
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
+use ssrf::UrlPolicy;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
@@ -38,18 +40,26 @@ pub struct AppState {
     pool: PgPool,
     store: PgStore,
     secrets: SecretBox,
+    url_policy: UrlPolicy,
     metrics: PrometheusHandle,
 }
 
 impl AppState {
-    /// `secrets` seals webhook signing secrets at rest.
+    /// `secrets` seals webhook signing secrets at rest. Webhook receivers must be public
+    /// addresses unless [`AppState::with_url_policy`] says otherwise.
     pub fn new(pool: PgPool, secrets: SecretBox) -> Self {
         Self {
             store: PgStore::new(pool.clone()),
             secrets,
+            url_policy: UrlPolicy::default(),
             pool,
             metrics: metrics::handle(),
         }
+    }
+
+    pub fn with_url_policy(mut self, url_policy: UrlPolicy) -> Self {
+        self.url_policy = url_policy;
+        self
     }
 }
 
@@ -82,6 +92,8 @@ impl AppState {
         v1::webhooks::update_webhook,
         v1::webhooks::delete_webhook,
         v1::webhooks::rotate_secret,
+        v1::webhooks::delivery_log,
+        v1::webhooks::redeliver,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)

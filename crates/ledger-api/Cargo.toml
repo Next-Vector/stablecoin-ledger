@@ -20,7 +20,7 @@ ledger-core = { path = "../ledger-core" }
 ledger-script = { path = "../ledger-script" }
 ledger-store = { path = "../ledger-store" }
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
 axum.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
@@ -74,4 +74,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "dispatcher"
+required-features = ["integration"]
+
+[[test]]
+name = "deliveries"
 required-features = ["integration"]

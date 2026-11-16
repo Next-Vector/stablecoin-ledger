@@ -109,6 +109,8 @@ pub struct WebhookChanges {
 pub enum WebhookError {
     #[error("webhook {0} does not exist")]
     NotFound(u64),
+    #[error("webhook event {0} does not exist")]
+    EventNotFound(String),
 }
 
 type EndpointRow = (i64, String, Vec<String>, bool, Option<i64>, i64);

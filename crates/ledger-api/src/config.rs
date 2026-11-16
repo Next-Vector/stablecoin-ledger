@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 
 use ledger_store::SecretBox;
 
+use crate::ssrf::UrlPolicy;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -13,6 +15,9 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Seals webhook signing secrets at rest; from `WEBHOOK_SECRET_KEY` (64 hex characters).
     pub webhook_secrets: SecretBox,
+    /// Which webhook receivers are allowed (FR-57): public addresses only unless
+    /// `WEBHOOK_ALLOW_PRIVATE_URLS=true`, which is for development.
+    pub webhook_url_policy: UrlPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,12 +88,24 @@ impl Config {
                 .ok(),
         };
 
+        let webhook_url_policy = match var("WEBHOOK_ALLOW_PRIVATE_URLS").as_deref() {
+            None | Some("false") => UrlPolicy::PublicOnly,
+            Some("true") => UrlPolicy::AllowPrivate,
+            Some(other) => {
+                problems.push(format!(
+                    "WEBHOOK_ALLOW_PRIVATE_URLS {other:?} must be true or false"
+                ));
+                UrlPolicy::PublicOnly
+            }
+        };
+
         match (problems.is_empty(), webhook_secrets) {
             (true, Some(webhook_secrets)) => Ok(Self {
                 database_url,
                 bind_addr,
                 log_format,
                 webhook_secrets,
+                webhook_url_policy,
             }),
             _ => Err(ConfigError { problems }),
         }
@@ -120,6 +137,7 @@ mod tests {
         assert_eq!(config.database_url, "postgres://u:p@db/ledger");
         assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Json);
+        assert_eq!(config.webhook_url_policy, UrlPolicy::PublicOnly);
     }
 
     #[test]
@@ -129,10 +147,12 @@ mod tests {
             ("BIND_ADDR", "127.0.0.1:9000"),
             ("LOG_FORMAT", "pretty"),
             ("WEBHOOK_SECRET_KEY", KEY),
+            ("WEBHOOK_ALLOW_PRIVATE_URLS", "true"),
         ]))
         .unwrap();
         assert_eq!(config.bind_addr, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Pretty);
+        assert_eq!(config.webhook_url_policy, UrlPolicy::AllowPrivate);
     }
 
     #[test]
@@ -140,9 +160,11 @@ mod tests {
         let error = Config::from_vars(vars(&[
             ("BIND_ADDR", "not-an-address"),
             ("LOG_FORMAT", "xml"),
+            ("WEBHOOK_ALLOW_PRIVATE_URLS", "yes"),
         ]))
         .unwrap_err();
-        assert_eq!(error.problems.len(), 4, "{error}");
+        assert_eq!(error.problems.len(), 5, "{error}");
+        assert!(error.to_string().contains("WEBHOOK_ALLOW_PRIVATE_URLS"));
         let message = error.to_string();
         assert!(message.contains("DATABASE_URL is required"), "{message}");
         assert!(message.contains("BIND_ADDR"), "{message}");

@@ -2,7 +2,7 @@
 //! with an HMAC signature, and lets the store schedule retries. Several dispatchers (replicas)
 //! can run at once; the store never hands the same delivery to two of them.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, KeyInit, Mac};
 use ledger_core::StoreError;
@@ -12,6 +12,8 @@ use sha2::Sha256;
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+
+use crate::ssrf::{self, PublicResolver, UrlPolicy};
 
 pub const SIGNATURE_HEADER: &str = "x-ledger-signature";
 pub const EVENT_ID_HEADER: &str = "x-ledger-event-id";
@@ -28,6 +30,8 @@ pub struct DispatcherConfig {
     pub batch: u32,
     /// The pause after a round that found nothing to deliver.
     pub idle_wait: Duration,
+    /// Which receivers may be contacted (FR-57); public addresses only by default.
+    pub url_policy: UrlPolicy,
 }
 
 impl Default for DispatcherConfig {
@@ -37,6 +41,7 @@ impl Default for DispatcherConfig {
             lease: Duration::from_secs(60),
             batch: 50,
             idle_wait: Duration::from_secs(1),
+            url_policy: UrlPolicy::default(),
         }
     }
 }
@@ -55,11 +60,16 @@ impl Dispatcher {
         secrets: SecretBox,
         config: DispatcherConfig,
     ) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .timeout(config.timeout)
             // A receiver answers itself; following redirects would send events elsewhere.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        let client = match config.url_policy {
+            // Names resolve through the checking resolver, and no proxy may connect for us.
+            UrlPolicy::PublicOnly => builder.dns_resolver(PublicResolver).no_proxy(),
+            UrlPolicy::AllowPrivate => builder,
+        }
+        .build()?;
         Ok(Self {
             store: PgStore::new(pool),
             secrets,
@@ -110,7 +120,10 @@ impl Dispatcher {
     }
 
     async fn attempt(&self, delivery: &Delivery) -> AttemptOutcome {
-        match self.send(delivery).await {
+        let started = Instant::now();
+        let sent = self.send(delivery).await;
+        let latency = started.elapsed();
+        match sent {
             Ok(status) => {
                 let succeeded = (200..300).contains(&status);
                 tracing::info!(
@@ -125,6 +138,7 @@ impl Dispatcher {
                     succeeded,
                     status_code: Some(status),
                     error: (!succeeded).then(|| format!("receiver answered {status}")),
+                    latency,
                 }
             }
             Err(error) => {
@@ -139,6 +153,7 @@ impl Dispatcher {
                     succeeded: false,
                     status_code: None,
                     error: Some(error),
+                    latency,
                 }
             }
         }
@@ -146,6 +161,10 @@ impl Dispatcher {
 
     /// POSTs the event; the receiver's status code, or why there was none.
     async fn send(&self, delivery: &Delivery) -> Result<u16, String> {
+        let url = reqwest::Url::parse(&delivery.url).map_err(|error| error.to_string())?;
+        if self.config.url_policy == UrlPolicy::PublicOnly {
+            ssrf::check_literal(&url).map_err(|refused| refused.to_string())?;
+        }
         let body = event_body(delivery)?;
         let secrets = self
             .store
@@ -158,16 +177,29 @@ impl Dispatcher {
             .as_secs();
         let response = self
             .client
-            .post(&delivery.url)
+            .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(EVENT_ID_HEADER, &delivery.event_id)
             .header(SIGNATURE_HEADER, signature(&secrets, timestamp, &body))
             .body(body)
             .send()
             .await
-            .map_err(|error| error.without_url().to_string())?;
+            .map_err(|error| describe(&error.without_url()))?;
         Ok(response.status().as_u16())
     }
+}
+
+/// An error with its causes, which carry the useful part (a refused address, a refused
+/// connection) of a request error.
+fn describe(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 /// The JSON a receiver gets (spec §5.6): id, type, created_at, sequence and data.

@@ -121,13 +121,17 @@ async fn serve(config: &Config) -> Result<(), Failure> {
     let dispatcher = Dispatcher::new(
         pool.clone(),
         config.webhook_secrets.clone(),
-        DispatcherConfig::default(),
+        DispatcherConfig {
+            url_policy: config.webhook_url_policy,
+            ..DispatcherConfig::default()
+        },
     )?;
     let dispatching = tokio::spawn(dispatcher.run(stopped));
     tracing::info!(addr = %config.bind_addr, "listening");
     axum::serve(
         listener,
-        app(AppState::new(pool.clone(), config.webhook_secrets.clone())),
+        app(AppState::new(pool.clone(), config.webhook_secrets.clone())
+            .with_url_policy(config.webhook_url_policy)),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;

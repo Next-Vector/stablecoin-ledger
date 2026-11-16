@@ -219,6 +219,10 @@ External systems learn about changes through webhooks rather than polling the AP
 
 Delivery as implemented: an event is fanned out to the subscriptions enabled for its type at the moment it is written, in the same DB transaction (a subscription created or enabled later does not receive earlier events). The dispatcher runs inside `ledger-api`; any number of replicas can run it. It claims due deliveries with `FOR UPDATE SKIP LOCKED` and pushes their next attempt time forward by a lease (60 s, longer than the 10 s timeout), so a delivery lost with a crashed process is retried after the lease and an outcome that arrives after the lease is ignored. Redirects are not followed. A failed attempt (non-2xx, timeout or connection error) is retried after 30 s × 2^(attempt−1), capped at 24 h; the 15th failure marks the delivery `failed`. During a secret rotation the signature header carries one `v1` per valid secret, current first.
 
+Every attempt is logged with its response code (null when there was none), latency and error; `GET /v1/webhooks/{id}/deliveries` lists a subscription's log newest first. `POST /v1/webhook-events/{id}/redeliver` queues the event again, as a new delivery with a fresh retry schedule, for every subscription it was delivered to; a subscription that still has a pending delivery of the event keeps just that one.
+
+SSRF protection as implemented: unless `WEBHOOK_ALLOW_PRIVATE_URLS=true` (development), a subscription URL must resolve, and only to public addresses — loopback, private (RFC 1918, unique local), link-local, shared (100.64/10), unspecified, broadcast and multicast addresses, IPv4-mapped forms included, are rejected with `400 VALIDATION_ERROR`. The dispatcher checks again at every attempt: IP literals before sending, names through a resolver that refuses the connection if any address is internal (so DNS rebinding does not get through), with system proxies disabled.
+
 Example webhook body:
 
 ```json
@@ -474,7 +478,7 @@ Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and
 |---|---|
 | 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount or script variable, `details.field` names the input), `SCRIPT_INVALID` (`details.line` and `details.column`) |
 | 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
-| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND`, `WEBHOOK_NOT_FOUND` |
+| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_EVENT_NOT_FOUND` |
 | 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
 | 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch) |
 
@@ -570,7 +574,8 @@ Additional tables for the blockchain integration:
 | `reconciliations` | Time, block, asset, expected and actual amount, difference |
 | `webhook_endpoints` | URL, event types, `enabled`, the current and previous signing secret encrypted at rest (AES-256-GCM with `WEBHOOK_SECRET_KEY`; HMAC signing needs the secret itself, so it cannot be hashed) and when the previous one stops signing |
 | `webhook_events` | Outbox, written in the same DB transaction as the change: id (`evt_…`), type, resource (`transaction:42`, `account:users:1:wallet`), `sequence` within the resource, JSON payload, created at |
-| `webhook_deliveries` | Event × subscription: status, attempt number, next attempt time, last response code and error |
+| `webhook_deliveries` | Delivery of an event to a subscription: status, attempt number, next attempt time, last response code and error; a redelivery adds a row, at most one pending per event and subscription |
+| `webhook_delivery_attempts` | Delivery attempt log: attempt number, success, response code, latency, error, time |
 
 A trigger on `transactions` and `postings` forbids `UPDATE` and `DELETE`.
 

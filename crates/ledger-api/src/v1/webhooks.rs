@@ -1,11 +1,14 @@
-//! Webhook subscriptions (FR-50) and secret rotation (FR-54). Secrets are returned only when
-//! created or rotated; at rest they are sealed with the service key.
+//! Webhook subscriptions (FR-50), secret rotation (FR-54), the delivery log and redelivery
+//! (FR-56), and SSRF checks on receiver URLs (FR-57). Secrets are returned only when created or
+//! rotated; at rest they are sealed with the service key.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use ledger_store::{EventType, WebhookChanges, WebhookEndpoint};
+use ledger_store::{
+    DeliveryAttempt, DeliveryStatus, EventDelivery, EventType, WebhookChanges, WebhookEndpoint,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -14,6 +17,7 @@ use super::idempotency::{self, Outcome};
 use crate::AppState;
 use crate::error::{ApiError, ErrorBody};
 use crate::extract::{Mutation, PathParams, QueryParams};
+use crate::ssrf::{self, UrlPolicy};
 
 const MAX_URL_LEN: usize = 2048;
 
@@ -155,7 +159,7 @@ pub async fn create_webhook(
     State(state): State<AppState>,
     Mutation { body, key }: Mutation<CreateWebhookRequest>,
 ) -> Result<Response, ApiError> {
-    validate_url(&body.url)?;
+    validate_url(&state, &body.url).await?;
     let event_types = event_types(body.event_types)?;
     let operation = state.store.create_webhook(
         &state.secrets,
@@ -212,7 +216,7 @@ pub async fn update_webhook(
     Mutation { body, key }: Mutation<UpdateWebhookRequest>,
 ) -> Result<Response, ApiError> {
     if let Some(url) = &body.url {
-        validate_url(url)?;
+        validate_url(&state, url).await?;
     }
     let changes = WebhookChanges {
         url: body.url,
@@ -280,6 +284,181 @@ pub async fn rotate_secret(
     with_secret(&state, StatusCode::OK, key.as_ref(), operation).await
 }
 
+/// Where a delivery stands.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryStatusBody {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+impl From<DeliveryStatus> for DeliveryStatusBody {
+    fn from(status: DeliveryStatus) -> Self {
+        match status {
+            DeliveryStatus::Pending => Self::Pending,
+            DeliveryStatus::Succeeded => Self::Succeeded,
+            DeliveryStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeliveryAttemptResponse {
+    pub id: u64,
+    /// The delivery this attempt belongs to; a redelivery starts a new one.
+    pub delivery_id: u64,
+    #[schema(example = "evt_0d1f…")]
+    pub event_id: String,
+    pub event_type: EventTypeBody,
+    /// The attempt's number within its delivery, from 1.
+    pub attempt: u32,
+    /// Whether the receiver answered 2xx.
+    pub succeeded: bool,
+    /// The receiver's status code; null when there was no response.
+    pub status_code: Option<u16>,
+    pub latency_ms: u64,
+    /// Why the attempt failed; null on success.
+    pub error: Option<String>,
+    /// Unix seconds when the attempt ended.
+    pub attempted_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeliveryAttemptPageResponse {
+    /// Newest first.
+    pub items: Vec<DeliveryAttemptResponse>,
+    /// Pass as `cursor` for the next (older) page; null on the last page.
+    pub next_cursor: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct DeliveryLogQuery {
+    /// Page size, 1 to 500 (default 50).
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    pub cursor: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EventDeliveryResponse {
+    pub id: u64,
+    pub webhook_id: u64,
+    pub status: DeliveryStatusBody,
+    /// Attempts made so far.
+    pub attempts: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RedeliveryResponse {
+    pub event_id: String,
+    /// Every delivery of the event, oldest first, the queued ones included.
+    pub deliveries: Vec<EventDeliveryResponse>,
+}
+
+/// Webhook delivery log
+///
+/// Every delivery attempt to this subscription, newest first: response code, latency and error.
+#[utoipa::path(
+    get, path = "/v1/webhooks/{id}/deliveries", tag = "webhooks",
+    params(("id" = u64, Path), DeliveryLogQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = DeliveryAttemptPageResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+        (status = 404, description = "WEBHOOK_NOT_FOUND", body = ErrorBody),
+    )
+)]
+pub async fn delivery_log(
+    State(state): State<AppState>,
+    PathParams(id): PathParams<u64>,
+    QueryParams(query): QueryParams<DeliveryLogQuery>,
+) -> Result<Json<DeliveryAttemptPageResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(ledger_store::Page::DEFAULT_LIMIT);
+    ledger_store::Page::new(limit, None)
+        .map_err(|error| ApiError::invalid_field("limit", error))?;
+    if state.store.webhook(id).await?.is_none() {
+        return Err(ledger_store::WebhookError::NotFound(id).into());
+    }
+    let (items, next_cursor) = state
+        .store
+        .delivery_attempts(id, query.cursor, limit)
+        .await?;
+    Ok(Json(DeliveryAttemptPageResponse {
+        items: items
+            .into_iter()
+            .map(attempt_response)
+            .collect::<Result<_, _>>()?,
+        next_cursor,
+    }))
+}
+
+/// Redeliver a webhook event
+///
+/// Queues the event again, with a fresh retry schedule, for every subscription it was delivered
+/// to; a subscription that still has a pending delivery of it is left as is.
+#[utoipa::path(
+    post, path = "/v1/webhook-events/{id}/redeliver", tag = "webhooks",
+    params(("id" = String, Path), ("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result")),
+    security(("api_key" = [])),
+    responses(
+        (status = 202, body = RedeliveryResponse),
+        (status = 404, description = "WEBHOOK_EVENT_NOT_FOUND", body = ErrorBody),
+        (status = 409, description = "IDEMPOTENCY_CONFLICT: the key was used for a different request", body = ErrorBody),
+    )
+)]
+pub async fn redeliver(
+    State(state): State<AppState>,
+    PathParams(event_id): PathParams<String>,
+    Mutation { key, .. }: Mutation<EmptyRequest>,
+) -> Result<Response, ApiError> {
+    let operation = state.store.redeliver(&event_id, key.as_ref());
+    // The key covers the path, so a replay is about this same event.
+    let replayed = matches!(
+        idempotency::run(&state.store, key.as_ref(), operation).await?,
+        Outcome::Replay(_)
+    );
+    let deliveries = state.store.event_deliveries(&event_id).await?;
+    let body = RedeliveryResponse {
+        event_id,
+        deliveries: deliveries.into_iter().map(delivery_response).collect(),
+    };
+    Ok(idempotency::respond(
+        (StatusCode::ACCEPTED, Json(body)),
+        replayed,
+    ))
+}
+
+fn attempt_response(attempt: DeliveryAttempt) -> Result<DeliveryAttemptResponse, ApiError> {
+    let event_type: EventType = attempt.event_type.parse().map_err(|_| {
+        tracing::error!(event_type = %attempt.event_type, "stored event type is unknown");
+        ApiError::internal()
+    })?;
+    Ok(DeliveryAttemptResponse {
+        id: attempt.id,
+        delivery_id: attempt.delivery_id,
+        event_id: attempt.event_id,
+        event_type: event_type.into(),
+        attempt: attempt.attempt,
+        succeeded: attempt.succeeded,
+        status_code: attempt.status_code,
+        latency_ms: attempt.latency_ms,
+        error: attempt.error,
+        attempted_at: attempt.attempted_at,
+    })
+}
+
+fn delivery_response(delivery: EventDelivery) -> EventDeliveryResponse {
+    EventDeliveryResponse {
+        id: delivery.id,
+        webhook_id: delivery.endpoint_id,
+        status: delivery.status.into(),
+        attempts: delivery.attempts,
+    }
+}
+
 /// Runs an operation that returns a subscription with its new secret. A replay answers with the
 /// same subscription and its current secret.
 async fn with_secret(
@@ -334,9 +513,9 @@ fn response(endpoint: WebhookEndpoint, secret: Option<String>) -> WebhookRespons
     }
 }
 
-/// An http(s) URL with a host, at most 2048 characters. Private addresses are refused in
-/// production by the SSRF check (FR-57).
-fn validate_url(url: &str) -> Result<(), ApiError> {
+/// An http(s) URL with a host, at most 2048 characters, that in production resolves to public
+/// addresses only (FR-57).
+async fn validate_url(state: &AppState, url: &str) -> Result<(), ApiError> {
     if url.len() > MAX_URL_LEN {
         return Err(ApiError::invalid_field(
             "url",
@@ -353,6 +532,11 @@ fn validate_url(url: &str) -> Result<(), ApiError> {
             "url",
             "must be an http or https URL with a host",
         ));
+    }
+    if state.url_policy == UrlPolicy::PublicOnly {
+        ssrf::check_receiver(url)
+            .await
+            .map_err(|reason| ApiError::invalid_field("url", reason))?;
     }
     Ok(())
 }
