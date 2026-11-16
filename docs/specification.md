@@ -456,6 +456,16 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 All mutating requests accept an `Idempotency-Key` header. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
 
+Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads need the `read` role, journal writes (transactions, reversals, holds) `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
+
+| Status | Codes |
+|---|---|
+| 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount, `details.field` names the input) |
+| 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
+| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND` |
+| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline) |
+| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED` |
+
 Example request:
 
 ```http

@@ -4,8 +4,10 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use ledger_core::{ApplyError, HoldError, RevertError, StoreError};
+use ledger_store::OpError;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -44,6 +46,22 @@ impl ApiError {
         }
     }
 
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.body.error.details = Some(details);
+        self
+    }
+
+    /// The request is malformed or breaks an input rule (`400 VALIDATION_ERROR`).
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "VALIDATION_ERROR", message)
+    }
+
+    /// Input `field` failed validation; `reason` explains why.
+    pub fn invalid_field(field: &str, reason: impl std::fmt::Display) -> Self {
+        Self::validation(format!("{field}: {reason}"))
+            .with_details(json!({ "field": field, "reason": reason.to_string() }))
+    }
+
     pub fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
@@ -68,6 +86,103 @@ impl ApiError {
             "this method is not allowed on this path",
         )
     }
+}
+
+impl From<ApplyError> for ApiError {
+    fn from(error: ApplyError) -> Self {
+        let message = error.to_string();
+        match error {
+            ApplyError::InsufficientFunds { account, asset } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INSUFFICIENT_FUNDS",
+                message,
+            )
+            .with_details(json!({ "account": account.as_str(), "asset": asset.to_string() })),
+            ApplyError::AccountFrozen(account) => {
+                Self::new(StatusCode::UNPROCESSABLE_ENTITY, "ACCOUNT_FROZEN", message)
+                    .with_details(json!({ "account": account.as_str() }))
+            }
+            ApplyError::Overflow => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "BALANCE_OVERFLOW",
+                message,
+            ),
+        }
+    }
+}
+
+impl From<RevertError> for ApiError {
+    fn from(error: RevertError) -> Self {
+        match error {
+            RevertError::NotFound(_) => transaction_not_found(),
+            RevertError::AlreadyReverted(_) => Self::new(
+                StatusCode::CONFLICT,
+                "ALREADY_REVERTED",
+                "this transaction has already been reverted",
+            ),
+            RevertError::Apply(rule) => rule.into(),
+        }
+    }
+}
+
+impl From<HoldError> for ApiError {
+    fn from(error: HoldError) -> Self {
+        let message = error.to_string();
+        match error {
+            HoldError::NotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "HOLD_NOT_FOUND",
+                "no hold has this id",
+            ),
+            HoldError::NotActive(_, status) => Self::new(
+                StatusCode::CONFLICT,
+                "HOLD_NOT_ACTIVE",
+                format!("the hold is {}, not active", status.as_str()),
+            )
+            .with_details(json!({ "status": status.as_str() })),
+            HoldError::ExceedsHold { requested, held } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "HOLD_AMOUNT_EXCEEDED",
+                message,
+            )
+            .with_details(json!({ "requested": requested.to_string(), "held": held.to_string() })),
+            HoldError::ZeroAmount => Self::invalid_field("amount", "must be greater than zero"),
+            HoldError::Posting(posting) => Self::validation(posting.to_string()),
+            HoldError::Apply(rule) => rule.into(),
+        }
+    }
+}
+
+impl From<StoreError> for ApiError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Apply(rule) => rule.into(),
+            StoreError::Backend(source) => internal(source.as_ref()),
+        }
+    }
+}
+
+impl<E: Into<ApiError>> From<OpError<E>> for ApiError {
+    fn from(error: OpError<E>) -> Self {
+        match error {
+            OpError::Rejected(rule) => rule.into(),
+            OpError::Backend(source) => internal(source.as_ref()),
+        }
+    }
+}
+
+pub fn transaction_not_found() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "TRANSACTION_NOT_FOUND",
+        "no transaction has this id",
+    )
+}
+
+/// Logs a backend failure and hides it from the client.
+fn internal(source: &(dyn std::error::Error + Send + Sync)) -> ApiError {
+    tracing::error!(error = %source, "storage backend failed");
+    ApiError::internal()
 }
 
 impl IntoResponse for ApiError {

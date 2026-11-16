@@ -98,6 +98,48 @@ async fn serves_the_openapi_31_document() {
 }
 
 #[tokio::test]
+async fn documents_the_v1_routes_behind_bearer_authentication() {
+    let (_, _, body) = send(router(), Method::GET, "/openapi.json").await;
+    let spec = json(&body);
+    assert_eq!(
+        spec["components"]["securitySchemes"]["api_key"]["scheme"],
+        "bearer"
+    );
+    for path in [
+        "/v1/transactions",
+        "/v1/transactions/{id}",
+        "/v1/transactions/{id}/revert",
+        "/v1/accounts/{address}",
+        "/v1/accounts/{address}/freeze",
+        "/v1/accounts/{address}/unfreeze",
+        "/v1/balances",
+        "/v1/holds",
+        "/v1/holds/{id}/capture",
+        "/v1/holds/{id}/void",
+    ] {
+        let operations = spec["paths"][path]
+            .as_object()
+            .unwrap_or_else(|| panic!("{path}"));
+        for (method, operation) in operations {
+            assert_eq!(
+                operation["security"][0]["api_key"],
+                serde_json::json!([]),
+                "{method} {path}"
+            );
+        }
+    }
+    assert!(spec["paths"]["/health"]["get"]["security"].is_null());
+}
+
+#[tokio::test]
+async fn v1_routes_require_an_api_key_without_touching_the_database_first() {
+    let (status, headers, body) = send(router(), Method::GET, "/v1/transactions").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(headers["www-authenticate"], "Bearer");
+    assert_eq!(json(&body)["error"]["code"], "UNAUTHORIZED");
+}
+
+#[tokio::test]
 async fn serves_swagger_ui_at_docs() {
     let (status, _, body) = send(router(), Method::GET, "/docs/").await;
     assert_eq!(status, StatusCode::OK);

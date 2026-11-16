@@ -67,7 +67,7 @@ curl -X POST -H 'Content-Type: application/json' \
 
 ## API keys
 
-Every `/v1` route needs `Authorization: Bearer <key>`; `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
+Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
 
 ```sh
 ledger-api create-api-key --role write --name merchant-backend   # prints the key once

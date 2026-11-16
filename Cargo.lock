@@ -912,6 +912,7 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "http-body-util",
+ "ledger-core",
  "ledger-store",
  "metrics",
  "metrics-exporter-prometheus",

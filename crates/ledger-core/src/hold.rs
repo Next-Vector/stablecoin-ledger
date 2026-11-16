@@ -1,15 +1,27 @@
 //! Holds: reserve funds, then capture (fully or partially) or void them. Every hold action is an
 //! ordinary journal transaction through the technical account `holds:{id}`, so the zero-sum
 //! invariant holds. Time is passed in explicitly (Unix seconds) to keep the core deterministic.
+//!
+//! The rules live on [`Hold`] as pure functions that build the transaction for each action, so
+//! the in-memory [`Journal`] and the PostgreSQL store apply exactly the same logic.
 
 use crate::{
     AccountAddress, ApplyError, AssetId, Journal, Metadata, Posting, PostingError, Transaction,
     TxId,
 };
 
-/// Hold id assigned by the journal, starting at 1.
+/// Hold id assigned by the store, starting at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HoldId(pub u64);
+
+impl HoldId {
+    /// The technical account `holds:{id}` that holds the reserved funds.
+    pub fn account(self) -> AccountAddress {
+        format!("holds:{}", self.0)
+            .parse()
+            .expect("holds:{id} is a valid account address")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldStatus {
@@ -19,10 +31,39 @@ pub enum HoldStatus {
     Expired,
 }
 
+impl HoldStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HoldStatus::Active => "active",
+            HoldStatus::Captured => "captured",
+            HoldStatus::Voided => "voided",
+            HoldStatus::Expired => "expired",
+        }
+    }
+}
+
+impl std::str::FromStr for HoldStatus {
+    type Err = UnknownHoldStatus;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "active" => Ok(HoldStatus::Active),
+            "captured" => Ok(HoldStatus::Captured),
+            "voided" => Ok(HoldStatus::Voided),
+            "expired" => Ok(HoldStatus::Expired),
+            other => Err(UnknownHoldStatus(other.to_owned())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown hold status {0:?}")]
+pub struct UnknownHoldStatus(pub String);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hold {
+    id: HoldId,
     owner: AccountAddress,
-    account: AccountAddress,
     asset: AssetId,
     amount: u128,
     status: HoldStatus,
@@ -30,14 +71,40 @@ pub struct Hold {
 }
 
 impl Hold {
+    /// A hold of `amount` (> 0) of `asset` reserved from `owner`, in the given state.
+    pub fn new(
+        id: HoldId,
+        owner: AccountAddress,
+        amount: u128,
+        asset: AssetId,
+        status: HoldStatus,
+        expires_at: Option<u64>,
+    ) -> Result<Self, HoldError> {
+        if amount == 0 {
+            return Err(HoldError::ZeroAmount);
+        }
+        Ok(Self {
+            id,
+            owner,
+            asset,
+            amount,
+            status,
+            expires_at,
+        })
+    }
+
+    pub fn id(&self) -> HoldId {
+        self.id
+    }
+
     /// The account the funds were reserved from and return to.
     pub fn owner(&self) -> &AccountAddress {
         &self.owner
     }
 
     /// The technical account `holds:{id}` holding the reserved funds.
-    pub fn account(&self) -> &AccountAddress {
-        &self.account
+    pub fn account(&self) -> AccountAddress {
+        self.id.account()
     }
 
     pub fn asset(&self) -> &AssetId {
@@ -55,6 +122,77 @@ impl Hold {
     /// Unix seconds after which the hold expires, if any.
     pub fn expires_at(&self) -> Option<u64> {
         self.expires_at
+    }
+
+    /// An active hold whose deadline is at or before `now` (Unix seconds): it must be voided as
+    /// expired and can no longer be captured.
+    pub fn is_due(&self, now: u64) -> bool {
+        self.status == HoldStatus::Active && self.expires_at.is_some_and(|at| at <= now)
+    }
+
+    /// The transaction that reserves the funds: owner → `holds:{id}`.
+    pub fn reservation(&self, metadata: Metadata) -> Result<Transaction, HoldError> {
+        let posting = Posting::new(
+            self.owner.clone(),
+            self.account(),
+            self.amount,
+            self.asset.clone(),
+        )?;
+        Ok(single(posting, metadata))
+    }
+
+    /// The transaction that sends `amount` (≤ the held amount) to `destination` and returns the
+    /// rest to the owner. Only an active hold can be captured.
+    pub fn capture(
+        &self,
+        destination: AccountAddress,
+        amount: u128,
+        metadata: Metadata,
+    ) -> Result<Transaction, HoldError> {
+        self.ensure_active()?;
+        if amount == 0 {
+            return Err(HoldError::ZeroAmount);
+        }
+        if amount > self.amount {
+            return Err(HoldError::ExceedsHold {
+                requested: amount,
+                held: self.amount,
+            });
+        }
+        let mut postings = vec![Posting::new(
+            self.account(),
+            destination,
+            amount,
+            self.asset.clone(),
+        )?];
+        if amount < self.amount {
+            postings.push(Posting::new(
+                self.account(),
+                self.owner.clone(),
+                self.amount - amount,
+                self.asset.clone(),
+            )?);
+        }
+        Ok(Transaction::new(postings, metadata).expect("one or two postings"))
+    }
+
+    /// The transaction that returns the whole held amount to the owner (void or expiry).
+    pub fn release(&self, metadata: Metadata) -> Result<Transaction, HoldError> {
+        self.ensure_active()?;
+        let posting = Posting::new(
+            self.account(),
+            self.owner.clone(),
+            self.amount,
+            self.asset.clone(),
+        )?;
+        Ok(single(posting, metadata))
+    }
+
+    fn ensure_active(&self) -> Result<(), HoldError> {
+        match self.status {
+            HoldStatus::Active => Ok(()),
+            status => Err(HoldError::NotActive(self.id, status)),
+        }
     }
 }
 
@@ -84,23 +222,10 @@ impl Journal {
         expires_at: Option<u64>,
         metadata: Metadata,
     ) -> Result<HoldId, HoldError> {
-        if amount == 0 {
-            return Err(HoldError::ZeroAmount);
-        }
         let id = HoldId(self.holds.len() as u64 + 1);
-        let account: AccountAddress = format!("holds:{}", id.0)
-            .parse()
-            .expect("holds:{id} is a valid account address");
-        let posting = Posting::new(owner.clone(), account.clone(), amount, asset.clone())?;
-        self.apply(single(posting, metadata))?;
-        self.holds.push(Hold {
-            owner,
-            account,
-            asset,
-            amount,
-            status: HoldStatus::Active,
-            expires_at,
-        });
+        let hold = Hold::new(id, owner, amount, asset, HoldStatus::Active, expires_at)?;
+        self.apply(hold.reservation(metadata)?)?;
+        self.holds.push(hold);
         Ok(id)
     }
 
@@ -113,31 +238,7 @@ impl Journal {
         amount: u128,
         metadata: Metadata,
     ) -> Result<TxId, HoldError> {
-        let hold = self.active_hold(id)?;
-        if amount == 0 {
-            return Err(HoldError::ZeroAmount);
-        }
-        if amount > hold.amount {
-            return Err(HoldError::ExceedsHold {
-                requested: amount,
-                held: hold.amount,
-            });
-        }
-        let mut postings = vec![Posting::new(
-            hold.account.clone(),
-            destination,
-            amount,
-            hold.asset.clone(),
-        )?];
-        if amount < hold.amount {
-            postings.push(Posting::new(
-                hold.account.clone(),
-                hold.owner.clone(),
-                hold.amount - amount,
-                hold.asset.clone(),
-            )?);
-        }
-        let tx = Transaction::new(postings, metadata).expect("one or two postings");
+        let tx = self.find_hold(id)?.capture(destination, amount, metadata)?;
         let tx_id = self.apply(tx)?;
         self.set_status(id, HoldStatus::Captured);
         Ok(tx_id)
@@ -154,11 +255,8 @@ impl Journal {
         let due: Vec<HoldId> = self
             .holds
             .iter()
-            .enumerate()
-            .filter(|(_, hold)| {
-                hold.status == HoldStatus::Active && hold.expires_at.is_some_and(|at| at <= now)
-            })
-            .map(|(index, _)| HoldId(index as u64 + 1))
+            .filter(|hold| hold.is_due(now))
+            .map(Hold::id)
             .collect();
         for &id in &due {
             self.release(id, HoldStatus::Expired, Metadata::new())?;
@@ -176,24 +274,14 @@ impl Journal {
         status: HoldStatus,
         metadata: Metadata,
     ) -> Result<TxId, HoldError> {
-        let hold = self.active_hold(id)?;
-        let posting = Posting::new(
-            hold.account.clone(),
-            hold.owner.clone(),
-            hold.amount,
-            hold.asset.clone(),
-        )?;
-        let tx_id = self.apply(single(posting, metadata))?;
+        let tx = self.find_hold(id)?.release(metadata)?;
+        let tx_id = self.apply(tx)?;
         self.set_status(id, status);
         Ok(tx_id)
     }
 
-    fn active_hold(&self, id: HoldId) -> Result<Hold, HoldError> {
-        let hold = self.get_hold(id).ok_or(HoldError::NotFound(id))?;
-        if hold.status != HoldStatus::Active {
-            return Err(HoldError::NotActive(id, hold.status));
-        }
-        Ok(hold.clone())
+    fn find_hold(&self, id: HoldId) -> Result<&Hold, HoldError> {
+        self.get_hold(id).ok_or(HoldError::NotFound(id))
     }
 
     fn set_status(&mut self, id: HoldId, status: HoldStatus) {
@@ -260,7 +348,7 @@ mod tests {
         assert_eq!(hold.amount(), 30);
         assert_eq!(hold.status(), HoldStatus::Active);
         assert_eq!(balance(&journal, "users:1:wallet"), amount(70));
-        assert_eq!(journal.balance(hold.account(), &usdc()), amount(30));
+        assert_eq!(journal.balance(&hold.account(), &usdc()), amount(30));
         assert_eq!(hold.account().as_str(), format!("holds:{}", id.0));
     }
 
@@ -300,7 +388,7 @@ mod tests {
         assert_eq!(balance(&journal, "merchants:7:wallet"), amount(30));
         assert_eq!(balance(&journal, "users:1:wallet"), amount(70));
         assert_eq!(
-            journal.balance(journal.get_hold(id).unwrap().account(), &usdc()),
+            journal.balance(&journal.get_hold(id).unwrap().account(), &usdc()),
             Balance::ZERO
         );
     }
@@ -319,7 +407,7 @@ mod tests {
         assert_eq!(balance(&journal, "merchants:7:wallet"), amount(20));
         assert_eq!(balance(&journal, "users:1:wallet"), amount(80));
         assert_eq!(
-            journal.balance(journal.get_hold(id).unwrap().account(), &usdc()),
+            journal.balance(&journal.get_hold(id).unwrap().account(), &usdc()),
             Balance::ZERO
         );
     }
@@ -423,5 +511,65 @@ mod tests {
 
         // An expired hold is not expired twice.
         assert_eq!(journal.expire(5_000), Ok(vec![later]));
+    }
+
+    #[test]
+    fn statuses_round_trip_through_text() {
+        for status in [
+            HoldStatus::Active,
+            HoldStatus::Captured,
+            HoldStatus::Voided,
+            HoldStatus::Expired,
+        ] {
+            assert_eq!(status.as_str().parse::<HoldStatus>().unwrap(), status);
+        }
+        assert!("pending".parse::<HoldStatus>().is_err());
+    }
+
+    #[test]
+    fn a_hold_can_be_rebuilt_from_storage_and_keeps_its_rules() {
+        let owner = account("users:1:wallet");
+        assert_eq!(
+            Hold::new(
+                HoldId(7),
+                owner.clone(),
+                0,
+                usdc(),
+                HoldStatus::Active,
+                None
+            ),
+            Err(HoldError::ZeroAmount)
+        );
+        let captured = Hold::new(
+            HoldId(7),
+            owner.clone(),
+            5,
+            usdc(),
+            HoldStatus::Captured,
+            None,
+        )
+        .unwrap();
+        assert_eq!(captured.account().as_str(), "holds:7");
+        assert_eq!(
+            captured.release(Metadata::new()),
+            Err(HoldError::NotActive(HoldId(7), HoldStatus::Captured))
+        );
+        let active = Hold::new(HoldId(7), owner, 5, usdc(), HoldStatus::Active, None).unwrap();
+        let tx = active
+            .capture(account("merchants:1:wallet"), 2, Metadata::new())
+            .unwrap();
+        assert_eq!(tx.postings().len(), 2);
+    }
+
+    #[test]
+    fn only_an_active_hold_past_its_deadline_is_due() {
+        let owner = account("users:1:wallet");
+        let hold = |status, expires_at| {
+            Hold::new(HoldId(1), owner.clone(), 5, usdc(), status, expires_at).unwrap()
+        };
+        assert!(hold(HoldStatus::Active, Some(100)).is_due(100));
+        assert!(!hold(HoldStatus::Active, Some(100)).is_due(99));
+        assert!(!hold(HoldStatus::Active, None).is_due(u64::MAX));
+        assert!(!hold(HoldStatus::Voided, Some(100)).is_due(200));
     }
 }

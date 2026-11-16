@@ -16,6 +16,7 @@ workspace = true
 integration = []
 
 [dependencies]
+ledger-core = { path = "../ledger-core" }
 ledger-store = { path = "../ledger-store" }
 sqlx.workspace = true
 tokio.workspace = true
@@ -48,4 +49,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "api_keys_cli"
+required-features = ["integration"]
+
+[[test]]
+name = "v1"
 required-features = ["integration"]

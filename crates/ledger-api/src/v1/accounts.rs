@@ -1,0 +1,136 @@
+//! Accounts: view with balances (FR-04), aggregated balances (FR-05), freeze (FR-08).
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use ledger_core::{AccountAddress, AccountPattern, AssetId, TxId};
+
+use super::dto::{AccountQuery, AccountResponse, BalancesQuery, BalancesResponse, balances, parse};
+use crate::AppState;
+use crate::error::{ApiError, ErrorBody, transaction_not_found};
+use crate::extract::{PathParams, QueryParams};
+
+/// Get an account
+///
+/// Metadata, flags and balances per asset — current, or as of a past transaction.
+#[utoipa::path(
+    get, path = "/v1/accounts/{address}", tag = "accounts",
+    params(("address" = String, Path, example = "users:42:wallet"), AccountQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = AccountResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+        (status = 404, description = "ACCOUNT_NOT_FOUND or TRANSACTION_NOT_FOUND (for `at`)", body = ErrorBody),
+    )
+)]
+pub async fn get_account(
+    State(state): State<AppState>,
+    PathParams(address): PathParams<String>,
+    QueryParams(query): QueryParams<AccountQuery>,
+) -> Result<Json<AccountResponse>, ApiError> {
+    let address = parse::<AccountAddress>("address", &address)?;
+    let at = query.at.map(TxId);
+    if let Some(at) = at
+        && state.store.transaction(at).await?.is_none()
+    {
+        return Err(transaction_not_found());
+    }
+    account(&state, &address, at).await
+}
+
+/// Aggregated balances
+///
+/// Sums the current balances of all accounts matching an address pattern, per asset.
+#[utoipa::path(
+    get, path = "/v1/balances", tag = "accounts",
+    params(BalancesQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = BalancesResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+    )
+)]
+pub async fn aggregate_balances(
+    State(state): State<AppState>,
+    QueryParams(query): QueryParams<BalancesQuery>,
+) -> Result<Json<BalancesResponse>, ApiError> {
+    let pattern = parse::<AccountPattern>("address", &query.address)?;
+    let asset = query
+        .asset
+        .map(|raw| parse::<AssetId>("asset", &raw))
+        .transpose()?;
+    let totals = state
+        .store
+        .aggregate_balances(&pattern, asset.as_ref())
+        .await?;
+    Ok(Json(BalancesResponse {
+        address: query.address,
+        balances: balances(totals),
+    }))
+}
+
+/// Freeze an account
+///
+/// A frozen account cannot be a posting source; it can still receive funds.
+#[utoipa::path(
+    post, path = "/v1/accounts/{address}/freeze", tag = "accounts",
+    params(("address" = String, Path, example = "users:42:wallet")),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = AccountResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+    )
+)]
+pub async fn freeze(
+    State(state): State<AppState>,
+    PathParams(address): PathParams<String>,
+) -> Result<Json<AccountResponse>, ApiError> {
+    set_frozen(&state, &address, true).await
+}
+
+/// Unfreeze an account
+#[utoipa::path(
+    post, path = "/v1/accounts/{address}/unfreeze", tag = "accounts",
+    params(("address" = String, Path, example = "users:42:wallet")),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = AccountResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+    )
+)]
+pub async fn unfreeze(
+    State(state): State<AppState>,
+    PathParams(address): PathParams<String>,
+) -> Result<Json<AccountResponse>, ApiError> {
+    set_frozen(&state, &address, false).await
+}
+
+async fn set_frozen(
+    state: &AppState,
+    address: &str,
+    frozen: bool,
+) -> Result<Json<AccountResponse>, ApiError> {
+    let address = parse::<AccountAddress>("address", address)?;
+    state.store.set_frozen(&address, frozen).await?;
+    tracing::info!(account = %address, frozen, "account freeze changed");
+    account(state, &address, None).await
+}
+
+async fn account(
+    state: &AppState,
+    address: &AccountAddress,
+    at: Option<TxId>,
+) -> Result<Json<AccountResponse>, ApiError> {
+    state
+        .store
+        .account(address, at)
+        .await?
+        .map(|account| Json(account.into()))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "ACCOUNT_NOT_FOUND",
+                "this account has no postings, flags or metadata",
+            )
+        })
+}

@@ -3,21 +3,25 @@
 mod auth;
 pub mod config;
 mod error;
+mod extract;
 mod health;
 mod metrics;
+mod v1;
 
 use std::time::Duration;
 
 use axum::Router;
 use axum::http::{HeaderName, StatusCode};
 use axum::routing::get;
+use ledger_store::PgStore;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 pub use auth::protect;
@@ -31,12 +35,14 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 #[derive(Clone)]
 pub struct AppState {
     pool: PgPool,
+    store: PgStore,
     metrics: PrometheusHandle,
 }
 
 impl AppState {
     pub fn new(pool: PgPool) -> Self {
         Self {
+            store: PgStore::new(pool.clone()),
             pool,
             metrics: metrics::handle(),
         }
@@ -49,13 +55,49 @@ impl AppState {
         title = "Stablecoin Ledger API",
         description = "Double-entry ledger for custodial stablecoin services."
     ),
-    paths(health::live, health::ready),
-    components(schemas(ErrorBody, health::HealthStatus))
+    paths(
+        health::live,
+        health::ready,
+        v1::transactions::create_transaction,
+        v1::transactions::list_transactions,
+        v1::transactions::get_transaction,
+        v1::transactions::revert,
+        v1::accounts::get_account,
+        v1::accounts::aggregate_balances,
+        v1::accounts::freeze,
+        v1::accounts::unfreeze,
+        v1::holds::create_hold,
+        v1::holds::capture,
+        v1::holds::void,
+    ),
+    components(schemas(ErrorBody, health::HealthStatus)),
+    modifiers(&BearerAuth)
 )]
 struct ApiDoc;
 
+/// Declares the `Authorization: Bearer <API key>` scheme the /v1 operations require.
+struct BearerAuth;
+
+impl Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi
+            .components
+            .get_or_insert_default()
+            .add_security_scheme(
+                v1::SECURITY_SCHEME,
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some("API key: `sl_<key_id>_<secret>`"))
+                        .build(),
+                ),
+            );
+    }
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .merge(v1::routes(&state))
         .route("/health", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/metrics", get(metrics::render))
