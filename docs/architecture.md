@@ -79,13 +79,13 @@ sequenceDiagram
     W->>R2: Transfer logs from cursor
     W->>A: POST /v1/transactions world → users:{id}:pending (Idempotency-Key chain_id:tx_hash:log_index)
     A->>L: apply
-    Note over W,L: webhook deposit.seen
+    Note over W,A: chain module webhook deposit.seen
     alt finality reached and both sources agree on the block hash
         W->>A: users:{id}:pending → users:{id}:wallet
-        Note over W,L: webhook deposit.confirmed
+        Note over W,A: chain module webhook deposit.confirmed
     else block dropped by a reorg before finality
         W->>A: revert the pending posting
-        Note over W,L: webhook deposit.orphaned
+        Note over W,A: chain module webhook deposit.orphaned
     else sources disagree or one is down
         Note over W: finalization halted on this network, alert raised
     end
@@ -120,7 +120,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    change["state change<br/>(posting, deposit, withdrawal)"] -->|same DB transaction| outbox[(webhook_events)]
+    change["state change<br/>(posting, hold, account)"] -->|same DB transaction| outbox[(webhook_events)]
     outbox -->|FOR UPDATE SKIP LOCKED| d1[dispatcher #1]
     outbox -->|FOR UPDATE SKIP LOCKED| d2[dispatcher #2]
     d1 -->|"POST + X-Ledger-Signature (HMAC-SHA256)"| rcv[Receiver]
@@ -139,7 +139,7 @@ Once a day (default 00:00 UTC) the chain module checks, per asset, with balances
 Σ on-chain balance (finalized block) = −balance(world) − Σ balance(users:*:pending)
 ```
 
-On-chain balances are read from both RPC sources. The result is stored; a non-zero difference raises an alert, emits `reconciliation.mismatch` and, if configured, halts withdrawals of that asset.
+On-chain balances are read from both RPC sources. The result is stored; a non-zero difference raises an alert, emits the chain module's `reconciliation.mismatch` webhook and, if configured, halts withdrawals of that asset.
 
 ## Trust boundaries and open core
 

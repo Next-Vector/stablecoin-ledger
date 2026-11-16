@@ -18,48 +18,27 @@ pub const PREVIOUS_SECRET_TTL_HOURS: u32 = 24;
 pub enum EventType {
     TransactionCreated,
     TransactionReverted,
-    DepositSeen,
-    DepositConfirmed,
-    DepositOrphaned,
-    WithdrawalBroadcast,
-    WithdrawalConfirmed,
-    WithdrawalFailed,
     HoldExpired,
     AccountFrozen,
     AccountUnfrozen,
-    ReconciliationMismatch,
 }
 
 impl EventType {
-    pub const ALL: [EventType; 12] = [
+    pub const ALL: [EventType; 5] = [
         EventType::TransactionCreated,
         EventType::TransactionReverted,
-        EventType::DepositSeen,
-        EventType::DepositConfirmed,
-        EventType::DepositOrphaned,
-        EventType::WithdrawalBroadcast,
-        EventType::WithdrawalConfirmed,
-        EventType::WithdrawalFailed,
         EventType::HoldExpired,
         EventType::AccountFrozen,
         EventType::AccountUnfrozen,
-        EventType::ReconciliationMismatch,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             EventType::TransactionCreated => "transaction.created",
             EventType::TransactionReverted => "transaction.reverted",
-            EventType::DepositSeen => "deposit.seen",
-            EventType::DepositConfirmed => "deposit.confirmed",
-            EventType::DepositOrphaned => "deposit.orphaned",
-            EventType::WithdrawalBroadcast => "withdrawal.broadcast",
-            EventType::WithdrawalConfirmed => "withdrawal.confirmed",
-            EventType::WithdrawalFailed => "withdrawal.failed",
             EventType::HoldExpired => "hold.expired",
             EventType::AccountFrozen => "account.frozen",
             EventType::AccountUnfrozen => "account.unfrozen",
-            EventType::ReconciliationMismatch => "reconciliation.mismatch",
         }
     }
 }

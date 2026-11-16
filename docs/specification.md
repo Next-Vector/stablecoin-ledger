@@ -209,15 +209,10 @@ External systems learn about changes through webhooks rather than polling the AP
 |---|---|
 | `transaction.created` | A new transaction was written to the journal |
 | `transaction.reverted` | A transaction was reversed |
-| `deposit.seen` | A deposit was seen on-chain; funds are in `pending` |
-| `deposit.confirmed` | A deposit reached finality; funds are in `wallet` |
-| `deposit.orphaned` | A deposit disappeared in a reorg and was reversed |
-| `withdrawal.broadcast` | A withdrawal transaction was broadcast |
-| `withdrawal.confirmed` | A withdrawal reached finality |
-| `withdrawal.failed` | A withdrawal failed; funds were returned |
 | `hold.expired` | A hold expired and was voided |
 | `account.frozen` · `account.unfrozen` | An account's frozen state changed |
-| `reconciliation.mismatch` | Reconciliation found a difference |
+
+Deposit, withdrawal and reconciliation events (`deposit.seen`, `withdrawal.confirmed`, `reconciliation.mismatch`, …) are emitted by the chain module, not by the ledger (#66).
 
 - **FR-52.** Transactional outbox: an event is written to `webhook_events` in the same DB transaction as the change it describes. An event is never lost on failure and never appears without the change.
 - **FR-53.** Delivery: HTTP POST with JSON, 10 s timeout, any 2xx is success. Failed attempts are retried with exponential backoff (30 s to 24 h, up to 15 attempts), after which the delivery is marked `failed`.
@@ -237,16 +232,15 @@ Example webhook body:
 ```json
 {
   "id": "evt_01JD3K9X2M",
-  "type": "deposit.confirmed",
+  "type": "hold.expired",
   "created_at": "2026-11-15T20:05:11Z",
-  "sequence": 2,
+  "sequence": 1,
   "data": {
-    "deposit_id": "dep_9f2c",
+    "hold_id": 77,
     "account": "users:42:wallet",
     "asset": "USDC@ethereum/6",
     "amount": "250000000",
-    "tx_hash": "0x8a1f…",
-    "ledger_tx_id": 10482
+    "transaction_id": 10482
   }
 }
 ```

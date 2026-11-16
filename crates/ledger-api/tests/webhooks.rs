@@ -293,6 +293,31 @@ async fn invalid_subscriptions_are_rejected() {
 }
 
 #[tokio::test]
+async fn chain_events_are_not_ledger_events() {
+    // Deposits, withdrawals and reconciliation belong to the chain module, so the ledger never
+    // emits these and refuses subscriptions to them.
+    let api = Api::new().await;
+    for event in [
+        "deposit.seen",
+        "deposit.confirmed",
+        "deposit.orphaned",
+        "withdrawal.broadcast",
+        "withdrawal.confirmed",
+        "withdrawal.failed",
+        "reconciliation.mismatch",
+    ] {
+        let (status, body) = api
+            .admin(
+                Method::POST,
+                "/v1/webhooks",
+                Some(json!({"url": "https://merchant.example/hooks", "event_types": [event]})),
+            )
+            .await;
+        assert_error(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    }
+}
+
+#[tokio::test]
 async fn webhook_management_requires_the_admin_role() {
     let api = Api::new().await;
     for (method, path) in [

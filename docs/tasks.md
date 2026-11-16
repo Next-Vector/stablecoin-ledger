@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 7 milestones and 39 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 40 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -9,7 +9,7 @@ MVP work broken into 7 milestones and 39 tasks (the blockchain milestones M6 and
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
-| [M5 · chain-watcher](#m5--chain-watcher) | 4 |
+| [M5 · chain-watcher](#m5--chain-watcher) | 5 |
 | [M8 · Polish](#m8--polish) | 3 |
 
 ## M0 · Scaffold
@@ -287,6 +287,13 @@ The ledger side of deposits: the registries the chain module relies on. Deposit 
 - **Requirements:** §7.1
 - **Scope:** drop the empty signer crates; the chain module builds them (stablecoin-chain-watcher#6). The ledger never signs.
 - **Done when:** the workspace builds and passes without them; the docs place the signer contract in the chain module.
+
+### 66. Remove chain event types from ledger webhooks
+
+- [ ] Done
+- **Requirements:** FR-51
+- **Scope:** remove `deposit.*`, `withdrawal.*` and `reconciliation.mismatch`; a migration strips them from subscriptions and deletes subscriptions left with none.
+- **Done when:** subscribing to a removed type is rejected; the migration keeps the rest of a mixed subscription and deletes a chain-only one.
 
 ## Moved to stablecoin-chain-watcher
 
