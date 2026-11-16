@@ -2,6 +2,7 @@
 
 mod auth;
 pub mod config;
+pub mod dispatcher;
 mod error;
 mod extract;
 mod health;

@@ -217,6 +217,8 @@ External systems learn about changes through webhooks rather than polling the AP
 - **FR-56.** A log of delivery attempts (response code, latency, error) and manual redelivery through the API.
 - **FR-57.** SSRF protection: in production configuration, URLs resolving to private, loopback and link-local addresses are rejected.
 
+Delivery as implemented: an event is fanned out to the subscriptions enabled for its type at the moment it is written, in the same DB transaction (a subscription created or enabled later does not receive earlier events). The dispatcher runs inside `ledger-api`; any number of replicas can run it. It claims due deliveries with `FOR UPDATE SKIP LOCKED` and pushes their next attempt time forward by a lease (60 s, longer than the 10 s timeout), so a delivery lost with a crashed process is retried after the lease and an outcome that arrives after the lease is ignored. Redirects are not followed. A failed attempt (non-2xx, timeout or connection error) is retried after 30 s × 2^(attempt−1), capped at 24 h; the 15th failure marks the delivery `failed`. During a secret rotation the signature header carries one `v1` per valid secret, current first.
+
 Example webhook body:
 
 ```json

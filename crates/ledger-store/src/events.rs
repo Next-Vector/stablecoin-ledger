@@ -1,6 +1,7 @@
 //! Writing webhook events to the transactional outbox (FR-51, FR-52, FR-55). Every function
 //! here runs inside the caller's DB transaction, next to the change the event describes; the
-//! payload is built in SQL from the rows just written.
+//! payload is built in SQL from the rows just written, and the deliveries to the subscribed
+//! endpoints are queued with it.
 
 use ledger_core::StoreError;
 use sqlx::PgConnection;
@@ -24,11 +25,18 @@ async fn emit(
         .execute(&mut *db)
         .await
         .map_err(backend)?;
+    // The event, then one delivery per subscription enabled for its type (FR-53).
     let sql = format!(
-        "INSERT INTO webhook_events (id, type, resource, sequence, data) \
-         SELECT 'evt_' || replace(gen_random_uuid()::text, '-', ''), $1, $2, \
-                coalesce((SELECT max(sequence) FROM webhook_events WHERE resource = $2), 0) + 1, \
-                {data}"
+        "WITH event AS ( \
+             INSERT INTO webhook_events (id, type, resource, sequence, data) \
+             SELECT 'evt_' || replace(gen_random_uuid()::text, '-', ''), $1, $2, \
+                    coalesce((SELECT max(sequence) FROM webhook_events WHERE resource = $2), 0) + 1, \
+                    {data} \
+             RETURNING id \
+         ) \
+         INSERT INTO webhook_deliveries (event_id, endpoint_id) \
+         SELECT event.id, endpoint.id FROM event \
+         JOIN webhook_endpoints AS endpoint ON endpoint.enabled AND $1 = ANY (endpoint.event_types)"
     );
     let query = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(kind.as_str())
