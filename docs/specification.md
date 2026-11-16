@@ -41,7 +41,7 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 
 ## 3. Scope
 
-The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network. Other networks come after the MVP.
+The ledger only keeps accounts and stays independent of any chain. Everything that touches a blockchain — deposit scanning, withdrawals, reconciliation against on-chain balances — is the chain module (private repository `stablecoin-chain-watcher`), which talks to the ledger through its REST API like any other client. Its MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network.
 
 **In the MVP:**
 
@@ -50,9 +50,7 @@ The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, 
 - PostgreSQL storage with atomic transactions;
 - REST API with idempotency;
 - webhooks for journal, deposit and withdrawal events, with guaranteed delivery and signatures;
-- deposits to registered addresses: indexing `Transfer` events from two independent RPC sources, two-phase crediting, reorg handling;
-- withdrawals through a hold, broadcasting the transaction from the hot wallet;
-- reconciliation of the journal against on-chain balances;
+- registries of assets and deposit addresses (FR-20) for the chain module;
 - metrics, logging, Docker Compose for local runs.
 
 **After the MVP:**
@@ -61,6 +59,8 @@ The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, 
 - freezing accounts based on issuer blocklists.
 
 **Out of scope for this repository:**
+
+- deposit indexing, withdrawals and on-chain reconciliation (sections 5.3–5.5): implemented by the chain module (private repository `stablecoin-chain-watcher`) on top of this API;
 
 - production key storage (KMS, HSM, MPC): implemented in the private `signer` repository (section 7.1); this repository contains only the contract and a local signer for development;
 - deposit address generation and sweeping: the address model (CREATE2 forwarders, HD derivation, etc.) depends on the key storage type, so it lives in `signer` (section 7.1); the ledger only registers addresses (FR-20);
@@ -151,15 +151,17 @@ Each requirement has an `FR-xx` id referenced by tests and acceptance criteria.
 
 - **FR-10.** A request with an already used key and the same body returns the first result without creating a new transaction.
 - **FR-11.** The same key with a different body returns `409 IDEMPOTENCY_CONFLICT`.
-- **FR-12.** For blockchain events the key is `{chain_id}:{tx_hash}:{log_index}`.
+- **FR-12.** For blockchain events the key is `{chain_id}:{tx_hash}:{log_index}`, with `:{attempt}` appended from the second crediting on (`…:{log_index}:2`, `:3`, …): a transfer reversed by a reorg (FR-24) and then included in another block is credited again under a new key, because the original key replays the reversed transaction. Each phase of one attempt has its own key (e.g. `…:final` for FR-23).
 
 ### 5.3 Deposits
 
 - **FR-20.** The ledger does not generate deposit addresses. The address model (CREATE2 forwarders, HD derivation, address per customer) depends on the chosen key storage type and is implemented in `signer` (section 7.1) or in the client's own system. An address is registered through the API as a mapping (network, address) → account; one address belongs to exactly one account. Registration needs no signature and works in read-only mode.
+The ledger's part of deposits is FR-20; FR-21–FR-27 are implemented by the chain module (private repository `stablecoin-chain-watcher`), which writes the postings below through `POST /v1/transactions` with the FR-12 idempotency key.
+
 - **FR-21.** The indexer reads `Transfer` events of registered tokens to deposit addresses and stores a cursor (number and hash of the last processed block).
 - **FR-22.** Event seen → posting `world → users:{id}:pending`.
 - **FR-23.** Finality threshold reached → posting `users:{id}:pending → users:{id}:wallet`.
-- **FR-24.** If the block containing the event is dropped by a reorg before finality, the FR-22 posting is reversed.
+- **FR-24.** If the block containing the event is dropped by a reorg before finality, the FR-22 posting is reversed. If the same transfer is later included in another block, it is credited again with the next attempt number in its FR-12 key.
 - **FR-25.** Restarting the indexer at any moment never causes a double or missed credit.
 - **FR-26.** Sweeping is performed outside the ledger: its mechanics depend on the address model (a CREATE2 factory call, or a signed transfer from each address after topping it up with gas) and are implemented in `signer` (SIG-11). The indexer recognizes a `Transfer` from a deposit address to a registered hot wallet as a sweep: user balances do not change; only the actual gas from the receipt is recorded (`platform:gas:{network}` → `world`).
 - **FR-27.** Every network is read from at least two independent RPC sources (different providers, or an own node plus a provider). A deposit becomes final only when both sources see the event in a block with the same hash and the finality threshold is reached. A hash mismatch, or one source being unavailable longer than a configured timeout, halts finalization on that network (deposits stay in pending) and raises an alert metric. The same rule applies to balance reads in reconciliation (FR-40) and to receipt reads in the withdrawer.
@@ -168,7 +170,7 @@ Registration as implemented: the ledger only keeps accounts and stays independen
 
 ### 5.4 Withdrawals
 
-A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
+Withdrawals are implemented by the chain module (private repository `stablecoin-chain-watcher`) with the ledger's holds and transactions; the table below is the posting contract it follows. A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
 
 | State | Trigger | Journal posting |
 |---|---|---|
@@ -180,9 +182,11 @@ A withdrawal is a finite state machine (**FR-30**); every state transition and i
 - **FR-31.** Hot wallet nonces are allocated sequentially and persisted before broadcast, so a restart cannot cause a double send.
 - **FR-32.** A stuck transaction (not included within N minutes) is re-sent with the same nonce and a higher gas price.
 - **FR-33.** The recipient address is validated (format and checksum) before the hold is created.
-- **FR-34.** If no signing service is connected, `withdrawer` does not start and `POST /v1/withdrawals` returns `501 SIGNER_NOT_CONFIGURED`. All other ledger functions work without restriction.
+- **FR-34.** If no signing service is connected, the chain module does not process withdrawals and its withdrawal endpoint returns `501 SIGNER_NOT_CONFIGURED`. The ledger works without restriction.
 
 ### 5.5 Reconciliation
+
+Reconciliation is implemented by the chain module (private repository `stablecoin-chain-watcher`), reading balances through the ledger API.
 
 - **FR-40.** For every asset, once a day (default 00:00 UTC, schedule configurable), the following equality is checked:
 
@@ -315,30 +319,24 @@ Correctness takes priority over speed: no optimization is accepted if it weakens
 
 ## 7. Architecture and technology stack
 
-The system is a Cargo workspace with four services over a shared core; no service writes to the journal tables directly.
+The ledger is a Cargo workspace with one service, `ledger-api`, over a shared core. The chain module (`stablecoin-chain-watcher`, private) indexes deposits, sends withdrawals and reconciles balances; it reaches the ledger only through the REST API, never its database.
 
 ```mermaid
 flowchart TB
     client[Client service]
     node["EVM node (anvil / RPC × 2)"]
 
+    chain["chain module (stablecoin-chain-watcher)<br/>deposits, withdrawals, reconciliation"]
     api["ledger-api<br/>axum, REST, auth"]
-    watcher["chain-watcher<br/>deposits, reorg"]
-    withdrawer["withdrawer<br/>withdrawal state machine"]
-    reconciler["reconciler<br/>on-chain reconciliation"]
 
     core["ledger-core + ledger-store<br/>invariants, holds, atomic DB transactions"]
     pg[(PostgreSQL)]
 
     client -- "REST /v1" --> api
-    node -- "Transfer events" --> watcher
-    withdrawer -- "signed txs" --> node
-    node -- "balances" --> reconciler
+    node <-- "events, signed txs, balances" --> chain
+    chain -- "REST /v1" --> api
 
     api --> core
-    watcher --> core
-    withdrawer --> core
-    reconciler --> core
     core -- "journal + balances" --> pg
 ```
 
@@ -353,14 +351,13 @@ stablecoin-ledger/          # public repository
 │   ├── ledger-script    # DSL: parser, compiler to postings
 │   ├── ledger-store     # PostgreSQL: journal, balances, migrations
 │   ├── ledger-api       # REST API + webhook-dispatcher
-│   ├── chain-watcher    # deposit indexer
-│   ├── withdrawer       # withdrawal state machine, signer gRPC client
-│   ├── reconciler       # journal ↔ chain reconciliation
 │   ├── signer-proto     # gRPC contract and Signer trait
 │   └── signer-local     # local signer for development and CI
 ├── contracts/           # mock USDC
 ├── benches/
 └── docker-compose.yml   # PostgreSQL + anvil + services
+
+stablecoin-chain-watcher/    # private repository: deposit indexer, withdrawals, reconciliation
 
 signer/                      # private repository
 ├── crates/
@@ -432,7 +429,7 @@ message SignTransactionResponse {
 
 **Signer requirements:**
 
-- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only `withdrawer` talks to the signer.
+- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only the chain module talks to the signer.
 - **SIG-02.** The withdrawal order (id, network, token, amount, recipient) is signed by the ledger with a separate ed25519 key when the hold is created. The signer rejects requests without a valid order, or with a transaction that does not match it.
 - **SIG-03.** Policies before signing: allowed networks and token contracts, `transfer` calls only, per-transaction and daily limits per `key_id`.
 - **SIG-04.** Idempotency: a repeated request with the same `idempotency_key` returns the same signed transaction; one order cannot be signed twice with different transactions (except a re-send with the same nonce, FR-32).
@@ -462,9 +459,6 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 | POST | `/v1/holds` | Create a hold | FR-07 |
 | POST | `/v1/holds/{id}/capture` · `/void` | Capture or void a hold | FR-07 |
 | POST | `/v1/deposit-addresses` | Register a deposit address (network, address, account) | FR-20 |
-| POST | `/v1/withdrawals` | Create a withdrawal | FR-30, FR-33 |
-| GET | `/v1/withdrawals/{id}` | Withdrawal state and tx hash | FR-30 |
-| GET | `/v1/reconciliations` | Reconciliation history | FR-41 |
 | POST · GET | `/v1/webhooks` | Create a subscription · list subscriptions | FR-50 |
 | PATCH · DELETE | `/v1/webhooks/{id}` | Update or delete a subscription | FR-50 |
 | POST | `/v1/webhooks/{id}/rotate-secret` | Rotate the secret | FR-54 |
@@ -566,16 +560,12 @@ CREATE TABLE idempotency_keys (
 );
 ```
 
-Additional tables for the blockchain integration:
+Additional tables:
 
 | Table | Contents |
 |---|---|
 | `assets` | Identifier, network, decimals |
 | `deposit_addresses` | Network and address (an opaque string) → wallet account |
-| `chain_cursors` | Last processed block (number and hash) per network |
-| `deposits` | tx hash, log index, block, amount, state (`seen`, `final`, `orphaned`), links to journal transactions |
-| `withdrawals` | State machine state, recipient address, nonce, tx hash, hold id |
-| `reconciliations` | Time, block, asset, expected and actual amount, difference |
 | `webhook_endpoints` | URL, event types, `enabled`, the current and previous signing secret encrypted at rest (AES-256-GCM with `WEBHOOK_SECRET_KEY`; HMAC signing needs the secret itself, so it cannot be hashed) and when the previous one stops signing |
 | `webhook_events` | Outbox, written in the same DB transaction as the change: id (`evt_…`), type, resource (`transaction:42`, `account:users:1:wallet`), `sequence` within the resource, JSON payload, created at |
 | `webhook_deliveries` | Delivery of an event to a subscription: status, attempt number, next attempt time, last response code and error; a redelivery adds a row, at most one pending per event and subscription |
@@ -625,12 +615,10 @@ Work proceeds in nine sequential stages; each ends with a tagged release and a w
 | 2. `ledger-store` | PostgreSQL, migrations, atomicity, concurrency test, rebuild-balances | NFR-01, NFR-02, NFR-08 | 2–3 |
 | 3. `ledger-api` | REST API, idempotency, authentication, OpenAPI, `ledger-script` DSL with dry-run | FR-10–FR-11, FR-60–FR-66, NFR-09 | 2 |
 | 4. Webhooks | Outbox, delivery worker, retries, HMAC signatures, delivery log | FR-50–FR-57 | 2 |
-| 5. `chain-watcher` | Deposit indexing, finality, reorgs on anvil, two RPC sources | FR-12, FR-20–FR-27 | 3 |
-| 6. `withdrawer` | Withdrawal state machine, nonces, re-send, failure tests, `signer-proto`, `signer-local`, signed orders | FR-30–FR-33, NFR-07 | 3 |
-| 7. `reconciler` | Daily reconciliation, alerts, metrics | FR-40–FR-42, NFR-12, NFR-13 | 1–2 |
+| 5. Deposit registry | Asset and deposit address registries for the chain module | FR-20 | 1 |
 | 8. Polish | Benchmarks, architecture diagrams, demo script, write-up article | NFR-04, NFR-05 | 2 |
 
-Total is roughly 20–23 weeks (the DSL adds about 2 weeks to stage 3). Stages 0–4 alone already make a complete portfolio project (a ledger service with webhooks, without the blockchain).
+Stages 0–4 already make a complete ledger service with webhooks; deposit indexing, withdrawals and reconciliation (formerly stages 5–7) are planned in the private `stablecoin-chain-watcher` repository.
 
 The private `signer` repository evolves in parallel on its own plan; the public stages do not depend on it because they are tested with `signer-local`.
 

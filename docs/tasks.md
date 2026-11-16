@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 9 milestones and 48 tasks, following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 38 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -9,9 +9,7 @@ MVP work broken into 9 milestones and 48 tasks, following the stages in [specifi
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
-| [M5 · chain-watcher](#m5--chain-watcher) | 6 |
-| [M6 · withdrawer](#m6--withdrawer) | 5 |
-| [M7 · reconciler](#m7--reconciler) | 2 |
+| [M5 · chain-watcher](#m5--chain-watcher) | 3 |
 | [M8 · Polish](#m8--polish) | 3 |
 
 ## M0 · Scaffold
@@ -22,7 +20,7 @@ Workspace, CI, pre-commit hook, Docker Compose, README. Spec: docs/specification
 
 - [ ] Done
 - **Requirements:** NFR-11, §7
-- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local. `#![forbid(unsafe_code)]` in every crate.
+- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64). `#![forbid(unsafe_code)]` in every crate.
 - **Done when:** `cargo build --workspace` and `cargo test --workspace` pass on a clean checkout.
 
 ### 2. CI pipeline: fmt, clippy, test, audit, deny
@@ -260,106 +258,38 @@ Outbox, delivery worker, retries, HMAC signatures, delivery log. Spec §5.6, sta
 
 ## M5 · chain-watcher
 
-Deposit indexing, finality, reorgs, two RPC sources, sweep recognition. Spec §5.3, stage 5.
+The ledger side of deposits: the registries the chain module relies on. Deposit indexing, withdrawals and reconciliation moved to the private `stablecoin-chain-watcher` repository (see below). Spec §5.3, stage 5.
 
 ### 29. Asset registry and deposit address registration API
 
 - [ ] Done
 - **Requirements:** FR-20, §4.2
-- **Scope:** `assets` table (chain id, contract, decimals, finality threshold). `POST /v1/deposit-addresses` registers (network, address) → account; one address per account. The ledger never generates addresses — the model lives in signer (SIG-11).
+- **Scope:** `assets` registry (asset ids only; chain details belong to the chain module). `POST /v1/deposit-addresses` registers (network, address) → wallet account, the address as an opaque string; an address belongs to one account, an account has one address per network. The ledger never generates or watches addresses.
 - **Done when:** e2e tests: register, duplicate address rejected.
 
-### 30. Mock USDC contract for anvil and Sepolia
+### 62. Serve Swagger UI at /api
 
 - [ ] Done
-- **Requirements:** §12 decisions
-- **Scope:** ERC-20 with 6 decimals, `mint`, `blacklist`, `pause`; deployment scripts for anvil and Sepolia.
-- **Done when:** Contract tests; deployed on anvil in the dev stack.
+- **Requirements:** NFR-11
+- **Scope:** Swagger UI at the API root `/api`, the raw spec at `/api-json`, both public.
+- **Done when:** `/api` serves Swagger UI loading `/api-json`; README updated.
 
-### 31. Indexer: Transfer events to pending with persistent cursor
-
-- [ ] Done
-- **Requirements:** FR-12, FR-21, FR-22, FR-25
-- **Scope:** Read `Transfer` events of registered tokens to registered addresses from a stored cursor (number + hash); idempotency key `{chain_id}:{tx_hash}:{log_index}`; seen → `world → users:{id}:pending`.
-- **Done when:** Test: restart at any point causes no double or missed credit.
-
-### 32. Finality and reorg handling
+### 64. Remove chain-watcher, withdrawer and reconciler from the ledger
 
 - [ ] Done
-- **Requirements:** FR-23, FR-24
-- **Scope:** Promote pending → wallet at the finality threshold (`finalized` tag on Ethereum); keep a window of recent block hashes; reverse FR-22 postings for blocks dropped before finality; `deposit.*` webhooks.
-- **Done when:** anvil reorg test: orphaned deposit is reversed and never reaches wallet.
+- **Requirements:** §3, §7
+- **Scope:** drop the empty `chain-watcher`, `withdrawer` and `reconciler` crates; describe them in the docs as the external chain module.
+- **Done when:** the workspace builds and passes without them; the docs no longer present them as ledger components.
 
-### 33. Two independent RPC sources with cross-check
+## Moved to stablecoin-chain-watcher
 
-- [ ] Done
-- **Requirements:** FR-27
-- **Scope:** At least two RPC sources per network. Finalize only when both see the event in a block with the same hash. Hash mismatch or one source down longer than the timeout halts finalization (deposits stay pending) and raises an alert metric.
-- **Done when:** Test with a faulty second source: deposit stays pending and alert fires; after recovery it is finalized exactly once.
+The ledger only keeps accounts and stays independent of any chain, so the blockchain milestones moved to the private `stablecoin-chain-watcher` repository, which uses this ledger through its API. GitHub redirects the old issue links.
 
-### 34. Sweep recognition and gas posting
-
-- [ ] Done
-- **Requirements:** FR-26
-- **Scope:** Recognize `Transfer` from a deposit address to a registered hot wallet as a sweep: no user balance change; post actual gas from the receipt (`platform:gas:{network}` → `world`). Sweep execution itself is out of scope (signer).
-- **Done when:** anvil test: sweep leaves user balances intact and records gas.
-
-## M6 · withdrawer
-
-Withdrawal state machine, nonces, re-send, signer contract, failure tests. Spec §5.4, §7.1, stage 6.
-
-### 35. signer-proto, Signer trait and signer-local
-
-- [ ] Done
-- **Requirements:** §7.1, NFR-10
-- **Scope:** Protobuf contract (ListKeys, GetAddress, SignTransaction) + tonic client, `Signer` trait, `signer-local` for anvil/Sepolia that refuses to start with a mainnet network.
-- **Done when:** Tests: signer-local signs on anvil; refuses a mainnet config.
-
-### 36. Withdrawal state machine and postings
-
-- [ ] Done
-- **Requirements:** FR-30, FR-33, FR-34
-- **Scope:** requested → broadcast → confirmed | failed with the §5.4 postings, each transition and posting in one DB transaction. Validate recipient (format + checksum) before the hold. Without a signer: `501 SIGNER_NOT_CONFIGURED`.
-- **Done when:** Tests for every transition and for the 501 path.
-
-### 37. Nonce management, broadcast and re-send of stuck transactions
-
-- [ ] Done
-- **Requirements:** FR-31, FR-32
-- **Scope:** Allocate nonces sequentially and persist the signed tx before broadcast; re-send a stuck tx with the same nonce and higher gas; track every attempt's hash.
-- **Done when:** Test: restart never double-broadcasts; stuck tx is replaced.
-
-### 38. Signed withdrawal orders
-
-- [ ] Done
-- **Requirements:** SIG-02
-- **Scope:** Ledger signs the withdrawal order (id, network, token, amount, recipient) with an ed25519 key at hold creation and passes it to the signer.
-- **Done when:** Tests: signer-local rejects a missing or mismatching order.
-
-### 39. Fault-injection tests for withdrawals
-
-- [ ] Done
-- **Requirements:** NFR-07, §10
-- **Scope:** Kill the process at every withdrawal step and restart.
-- **Done when:** No lost or duplicated funds, no double broadcast at any step.
-
-## M7 · reconciler
-
-Daily reconciliation, alerts, metrics. Spec §5.5, stage 7.
-
-### 40. Daily reconciliation job and results storage
-
-- [ ] Done
-- **Requirements:** FR-40, FR-41, FR-27
-- **Scope:** Once a day (default 00:00 UTC, configurable) check Σ on-chain (finalized block, both RPC sources) = −balance(world) − Σ pending per asset; store time, block, expected, actual, difference; `GET /v1/reconciliations`.
-- **Done when:** e2e: after deposits, transfers and withdrawals the difference is 0.
-
-### 41. Mismatch alerts, withdrawal halt, metrics and tracing
-
-- [ ] Done
-- **Requirements:** FR-42, NFR-12, NFR-13
-- **Scope:** Difference ≠ 0 → alert metric, `reconciliation.mismatch` webhook, optional halt of withdrawals for that asset. Prometheus metrics (tx/s, latency, indexer lag, reconciliation difference) and OpenTelemetry tracing.
-- **Done when:** Test: injected mismatch fires the alert and halts withdrawals when configured.
+| Milestone | Former issues | Now in stablecoin-chain-watcher |
+|---|---|---|
+| M5 · chain-watcher | #30–#34 | #1–#5 |
+| M6 · withdrawer | #35–#39 | #6–#10 |
+| M7 · reconciler | #40–#41 | #11–#12 |
 
 ## M8 · Polish
 
