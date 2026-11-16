@@ -52,7 +52,7 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 | Service | Address |
 |---|---|
 | ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/docs/`, spec at `/openapi.json` |
-| PostgreSQL 16 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
+| PostgreSQL 18 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
 | anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
 
 Defaults live in `.env`; put host-specific overrides in `.env.local` (git-ignored). `.env.example` documents every key.

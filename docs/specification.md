@@ -365,7 +365,7 @@ signer/                      # private repository
 | Language | Rust stable, edition 2024 |
 | Async runtime | `tokio` |
 | HTTP | `axum`, `tower` |
-| Database | PostgreSQL 16, `sqlx` (compile-time checked queries) |
+| Database | PostgreSQL 18, `sqlx` (compile-time checked queries) |
 | Blockchain | `alloy` (EVM), anvil for the local network |
 | Serialization | `serde`, `serde_json` |
 | Errors | `thiserror` in libraries, `anyhow` in binaries |
