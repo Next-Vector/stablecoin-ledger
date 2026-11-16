@@ -86,6 +86,40 @@ impl PgStore {
         deposit_address(row).map_err(|error| OpError::Backend(Box::new(error)))
     }
 
+    /// Registrations by id, at most `limit` after `after`, optionally only those of `network`,
+    /// `address` (exact match) and `account`; the next cursor when more exist.
+    pub async fn deposit_addresses(
+        &self,
+        network: Option<&str>,
+        address: Option<&str>,
+        account: Option<&AccountAddress>,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<DepositAddress>, Option<u64>), StoreError> {
+        let mut rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {COLUMNS} FROM deposit_addresses \
+             WHERE ($1::text IS NULL OR network = $1) AND ($2::text IS NULL OR address = $2) \
+               AND ($3::text IS NULL OR account = $3) AND ($4::bigint IS NULL OR id > $4) \
+             ORDER BY id LIMIT $5"
+        )))
+        .bind(network)
+        .bind(address)
+        .bind(account.map(AccountAddress::as_str))
+        .bind(after.map(i64::try_from).transpose().map_err(backend)?)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let more = rows.len() > limit as usize;
+        rows.truncate(limit as usize);
+        let items = rows
+            .into_iter()
+            .map(deposit_address)
+            .collect::<Result<Vec<_>, _>>()?;
+        let next = more.then(|| items.last().map(|item| item.id)).flatten();
+        Ok((items, next))
+    }
+
     pub async fn deposit_address(&self, id: u64) -> Result<Option<DepositAddress>, StoreError> {
         let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {COLUMNS} FROM deposit_addresses WHERE id = $1"

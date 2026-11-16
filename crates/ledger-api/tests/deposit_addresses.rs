@@ -95,6 +95,37 @@ impl Api {
     }
 }
 
+impl Api {
+    async fn list(&self, key: &str, query: &str) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("/v1/deposit-addresses{query}"))
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// The addresses of a page, in order.
+    async fn addresses(&self, query: &str) -> (Vec<String>, Value) {
+        let (status, body) = self.list(&self.read, query).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let addresses = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["address"].as_str().unwrap().to_owned())
+            .collect();
+        (addresses, body["next_cursor"].clone())
+    }
+}
+
 fn assert_error(status: StatusCode, body: &Value, expected: StatusCode, code: &str) {
     assert_eq!(status, expected, "{body}");
     assert_eq!(body["error"]["code"], code, "{body}");
@@ -232,4 +263,70 @@ async fn a_repeated_request_replays_the_registration() {
     assert_eq!(status, StatusCode::CREATED, "{again}");
     assert!(replayed);
     assert_eq!(again, first);
+}
+
+#[tokio::test]
+async fn an_address_is_looked_up_by_network_and_address() {
+    let api = Api::new().await;
+    let (_, registered) = api.register("ethereum", ADDRESS, "users:42:wallet").await;
+    api.register("tron", TRON_ADDRESS, "users:7:wallet").await;
+
+    let (status, body) = api
+        .list(&api.read, &format!("?network=ethereum&address={ADDRESS}"))
+        .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"], json!([registered]));
+    assert_eq!(body["next_cursor"], Value::Null);
+    // Matching is exact: another letter case, network or address finds nothing.
+    for query in [
+        format!("?network=ethereum&address={}", ADDRESS.to_lowercase()),
+        format!("?network=tron&address={ADDRESS}"),
+        format!("?network=ethereum&address={OTHER}"),
+    ] {
+        let (addresses, _) = api.addresses(&query).await;
+        assert!(addresses.is_empty(), "{query}: {addresses:?}");
+    }
+}
+
+#[tokio::test]
+async fn registrations_are_listed_by_filter_and_page() {
+    let api = Api::new().await;
+    api.register("ethereum", ADDRESS, "users:1:wallet").await;
+    api.register("tron", TRON_ADDRESS, "users:1:wallet").await;
+    api.register("ethereum", OTHER, "users:2:wallet").await;
+
+    let (all, next) = api.addresses("").await;
+    assert_eq!(all, [ADDRESS, TRON_ADDRESS, OTHER], "registration order");
+    assert_eq!(next, Value::Null);
+
+    let (ethereum, _) = api.addresses("?network=ethereum").await;
+    assert_eq!(ethereum, [ADDRESS, OTHER]);
+    let (account, _) = api.addresses("?account=users:1:wallet").await;
+    assert_eq!(account, [ADDRESS, TRON_ADDRESS]);
+
+    let (first, cursor) = api.addresses("?limit=2").await;
+    assert_eq!(first, [ADDRESS, TRON_ADDRESS]);
+    let (rest, last) = api
+        .addresses(&format!("?limit=2&cursor={}", cursor.as_u64().unwrap()))
+        .await;
+    assert_eq!(rest, [OTHER]);
+    assert_eq!(last, Value::Null);
+}
+
+#[tokio::test]
+async fn listing_rejects_bad_queries_and_needs_a_key() {
+    let api = Api::new().await;
+    for query in [
+        "?limit=0",
+        "?limit=501",
+        "?cursor=x",
+        "?account=not%20an%20account",
+        "?colour=red",
+    ] {
+        let (status, body) = api.list(&api.read, query).await;
+        assert_error(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    }
+    let (status, body) = api.list("sl_not_a_key", "").await;
+    assert_error(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHORIZED");
 }

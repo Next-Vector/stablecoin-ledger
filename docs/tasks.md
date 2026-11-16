@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 7 milestones and 40 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 42 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -9,7 +9,7 @@ MVP work broken into 7 milestones and 40 tasks (the blockchain milestones M6 and
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
-| [M5 · chain-watcher](#m5--chain-watcher) | 5 |
+| [M5 · deposit registry](#m5--deposit-registry) | 7 |
 | [M8 · Polish](#m8--polish) | 3 |
 
 ## M0 · Scaffold
@@ -256,7 +256,7 @@ Outbox, delivery worker, retries, HMAC signatures, delivery log. Spec §5.6, sta
 - **Scope:** a periodic job voids holds past `expires_at` as `expired`, each in its own DB transaction with `FOR UPDATE SKIP LOCKED` so replicas can share the work, and emits `hold.expired`.
 - **Done when:** integration tests: a due hold is voided and its funds return; a hold not yet due is untouched; concurrent sweepers void each hold once.
 
-## M5 · chain-watcher
+## M5 · deposit registry
 
 The ledger side of deposits: the registries the chain module relies on. Deposit indexing, withdrawals and reconciliation moved to the private `stablecoin-chain-watcher` repository (see below). Spec §5.3, stage 5.
 
@@ -294,6 +294,20 @@ The ledger side of deposits: the registries the chain module relies on. Deposit 
 - **Requirements:** FR-51
 - **Scope:** remove `deposit.*`, `withdrawal.*` and `reconciliation.mismatch`; a migration strips them from subscriptions and deletes subscriptions left with none.
 - **Done when:** subscribing to a removed type is rejected; the migration keeps the rest of a mixed subscription and deletes a chain-only one.
+
+### 67. List and look up deposit addresses
+
+- [ ] Done
+- **Requirements:** FR-20
+- **Scope:** `GET /v1/deposit-addresses` (role `read`) with `network`, `address` (exact) and `account` filters and cursor paging.
+- **Done when:** a lookup by network and address finds the account; filters, paging and validation are tested.
+
+### 68. Remove anvil from the ledger dev stack
+
+- [ ] Done
+- **Requirements:** §3
+- **Scope:** drop the `anvil` service, `ANVIL_CHAIN_ID` and `ETH_RPC_URL`; the smoke check waits for ledger-api instead.
+- **Done when:** `./run-dev up -d` starts PostgreSQL and ledger-api only, and the smoke check passes.
 
 ## Moved to stablecoin-chain-watcher
 

@@ -96,6 +96,7 @@ impl AppState {
         v1::webhooks::delivery_log,
         v1::webhooks::redeliver,
         v1::deposit_addresses::register_deposit_address,
+        v1::deposit_addresses::list_deposit_addresses,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)

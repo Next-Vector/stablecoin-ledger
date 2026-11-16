@@ -28,7 +28,11 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/v1/balances", get(accounts::aggregate_balances))
         .route("/v1/scripts", get(scripts::list_scripts))
         .route("/v1/scripts/{name}/versions", get(scripts::script_versions))
-        .route("/v1/scripts/dry-run", post(scripts::dry_run));
+        .route("/v1/scripts/dry-run", post(scripts::dry_run))
+        .route(
+            "/v1/deposit-addresses",
+            get(deposit_addresses::list_deposit_addresses),
+        );
     let write = Router::new()
         .route("/v1/transactions", post(transactions::create_transaction))
         .route("/v1/transactions/{id}/revert", post(transactions::revert))

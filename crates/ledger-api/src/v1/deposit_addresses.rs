@@ -9,13 +9,13 @@ use axum::response::Response;
 use ledger_core::AccountAddress;
 use ledger_store::DepositAddress;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use super::dto::parse;
 use super::idempotency::{self, Outcome};
 use crate::AppState;
 use crate::error::{ApiError, ErrorBody};
-use crate::extract::Mutation;
+use crate::extract::{Mutation, QueryParams};
 
 /// The longest address accepted (bytes); the schema allows the same.
 const MAX_ADDRESS_LEN: usize = 255;
@@ -44,6 +44,30 @@ pub struct DepositAddressResponse {
     pub account: String,
     /// Unix seconds.
     pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DepositAddressPageResponse {
+    pub items: Vec<DepositAddressResponse>,
+    /// Pass as `cursor` for the next page; absent on the last one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct ListDepositAddressesQuery {
+    /// Only this network.
+    pub network: Option<String>,
+    /// Only this address, matched exactly (letter case included).
+    pub address: Option<String>,
+    /// Only this wallet account.
+    pub account: Option<String>,
+    /// Page size, 1 to 500 (default 50).
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    pub cursor: Option<u64>,
 }
 
 impl From<DepositAddress> for DepositAddressResponse {
@@ -117,4 +141,48 @@ pub async fn register_deposit_address(
         ),
         replayed,
     ))
+}
+
+/// List deposit addresses
+///
+/// Registrations in registration order, filtered by network, address (exact match) and account.
+/// Looking up one address on one network returns at most one item: the account it deposits into.
+#[utoipa::path(
+    get, path = "/v1/deposit-addresses", tag = "deposits",
+    params(ListDepositAddressesQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, body = DepositAddressPageResponse),
+        (status = 400, description = "VALIDATION_ERROR", body = ErrorBody),
+    )
+)]
+pub async fn list_deposit_addresses(
+    State(state): State<AppState>,
+    QueryParams(query): QueryParams<ListDepositAddressesQuery>,
+) -> Result<Json<DepositAddressPageResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(ledger_store::Page::DEFAULT_LIMIT);
+    ledger_store::Page::new(limit, None)
+        .map_err(|error| ApiError::invalid_field("limit", error))?;
+    let account = query
+        .account
+        .as_deref()
+        .map(|raw| parse::<AccountAddress>("account", raw))
+        .transpose()?;
+    let (items, next_cursor) = state
+        .store
+        .deposit_addresses(
+            query.network.as_deref(),
+            query.address.as_deref(),
+            account.as_ref(),
+            query.cursor,
+            limit,
+        )
+        .await?;
+    Ok(Json(DepositAddressPageResponse {
+        items: items
+            .into_iter()
+            .map(DepositAddressResponse::from)
+            .collect(),
+        next_cursor,
+    }))
 }
