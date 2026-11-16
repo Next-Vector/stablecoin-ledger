@@ -42,6 +42,7 @@ services:
       LOG_FORMAT: json
       WEBHOOK_SECRET_KEY: ${WEBHOOK_SECRET_KEY}
       WEBHOOK_ALLOW_PRIVATE_URLS: ${WEBHOOK_ALLOW_PRIVATE_URLS:-false}
+      HOLD_EXPIRY_INTERVAL_SECONDS: ${HOLD_EXPIRY_INTERVAL_SECONDS:-30}
     volumes:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml

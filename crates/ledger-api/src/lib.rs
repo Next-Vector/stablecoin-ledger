@@ -4,6 +4,7 @@ mod auth;
 pub mod config;
 pub mod dispatcher;
 mod error;
+pub mod expiry;
 mod extract;
 mod health;
 mod metrics;

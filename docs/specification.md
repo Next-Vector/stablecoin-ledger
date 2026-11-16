@@ -130,6 +130,8 @@ Rules:
 - `void(hold_id)` returns everything; an expired hold is voided automatically.
 - Every hold operation is an ordinary journal transaction, so invariant 4.3.4 holds.
 
+Expiry as implemented: a sweeper inside `ledger-api` runs every `HOLD_EXPIRY_INTERVAL_SECONDS` (default 30) and voids active holds whose `expires_at` has passed as `expired`. Each hold settles in its own DB transaction together with its `hold.expired` event (`hold_id`, `account`, `asset`, `amount`, `transaction_id` of the release); rows are claimed with `FOR UPDATE SKIP LOCKED`, so any number of replicas can sweep and each hold expires once. Between its deadline and the next sweep a hold can no longer be captured (`409 HOLD_NOT_ACTIVE`) but can still be voided.
+
 ## 5. Functional requirements
 
 Each requirement has an `FR-xx` id referenced by tests and acceptance criteria.

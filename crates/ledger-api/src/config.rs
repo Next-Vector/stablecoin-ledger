@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use ledger_store::SecretBox;
 
@@ -18,6 +19,8 @@ pub struct Config {
     /// Which webhook receivers are allowed (FR-57): public addresses only unless
     /// `WEBHOOK_ALLOW_PRIVATE_URLS=true`, which is for development.
     pub webhook_url_policy: UrlPolicy,
+    /// How often overdue holds are expired (FR-07); `HOLD_EXPIRY_INTERVAL_SECONDS`, default 30.
+    pub hold_expiry_interval: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +44,7 @@ impl std::error::Error for ConfigError {}
 
 impl Config {
     const DEFAULT_BIND_ADDR: &'static str = "0.0.0.0:8080";
+    const DEFAULT_HOLD_EXPIRY_INTERVAL: Duration = Duration::from_secs(30);
 
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_vars(|key| std::env::var(key).ok())
@@ -99,6 +103,19 @@ impl Config {
             }
         };
 
+        let hold_expiry_interval = match var("HOLD_EXPIRY_INTERVAL_SECONDS") {
+            None => Self::DEFAULT_HOLD_EXPIRY_INTERVAL,
+            Some(raw) => match raw.parse::<u64>() {
+                Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
+                _ => {
+                    problems.push(format!(
+                        "HOLD_EXPIRY_INTERVAL_SECONDS {raw:?} must be a positive number of seconds"
+                    ));
+                    Self::DEFAULT_HOLD_EXPIRY_INTERVAL
+                }
+            },
+        };
+
         match (problems.is_empty(), webhook_secrets) {
             (true, Some(webhook_secrets)) => Ok(Self {
                 database_url,
@@ -106,6 +123,7 @@ impl Config {
                 log_format,
                 webhook_secrets,
                 webhook_url_policy,
+                hold_expiry_interval,
             }),
             _ => Err(ConfigError { problems }),
         }
@@ -114,6 +132,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -138,6 +158,7 @@ mod tests {
         assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Json);
         assert_eq!(config.webhook_url_policy, UrlPolicy::PublicOnly);
+        assert_eq!(config.hold_expiry_interval, Duration::from_secs(30));
     }
 
     #[test]
@@ -148,8 +169,10 @@ mod tests {
             ("LOG_FORMAT", "pretty"),
             ("WEBHOOK_SECRET_KEY", KEY),
             ("WEBHOOK_ALLOW_PRIVATE_URLS", "true"),
+            ("HOLD_EXPIRY_INTERVAL_SECONDS", "5"),
         ]))
         .unwrap();
+        assert_eq!(config.hold_expiry_interval, Duration::from_secs(5));
         assert_eq!(config.bind_addr, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Pretty);
         assert_eq!(config.webhook_url_policy, UrlPolicy::AllowPrivate);
@@ -161,9 +184,11 @@ mod tests {
             ("BIND_ADDR", "not-an-address"),
             ("LOG_FORMAT", "xml"),
             ("WEBHOOK_ALLOW_PRIVATE_URLS", "yes"),
+            ("HOLD_EXPIRY_INTERVAL_SECONDS", "0"),
         ]))
         .unwrap_err();
-        assert_eq!(error.problems.len(), 5, "{error}");
+        assert_eq!(error.problems.len(), 6, "{error}");
+        assert!(error.to_string().contains("HOLD_EXPIRY_INTERVAL_SECONDS"));
         assert!(error.to_string().contains("WEBHOOK_ALLOW_PRIVATE_URLS"));
         let message = error.to_string();
         assert!(message.contains("DATABASE_URL is required"), "{message}");

@@ -79,3 +79,7 @@ required-features = ["integration"]
 [[test]]
 name = "deliveries"
 required-features = ["integration"]
+
+[[test]]
+name = "hold_expiry"
+required-features = ["integration"]

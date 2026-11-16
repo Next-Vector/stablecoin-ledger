@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use ledger_api::config::{Config, LogFormat};
 use ledger_api::dispatcher::{Dispatcher, DispatcherConfig};
+use ledger_api::expiry::HoldSweeper;
 use ledger_api::{AppState, app};
 use ledger_store::Role;
 use sqlx::PgPool;
@@ -126,7 +127,9 @@ async fn serve(config: &Config) -> Result<(), Failure> {
             ..DispatcherConfig::default()
         },
     )?;
-    let dispatching = tokio::spawn(dispatcher.run(stopped));
+    let dispatching = tokio::spawn(dispatcher.run(stopped.clone()));
+    let sweeping =
+        tokio::spawn(HoldSweeper::new(pool.clone(), config.hold_expiry_interval).run(stopped));
     tracing::info!(addr = %config.bind_addr, "listening");
     axum::serve(
         listener,
@@ -138,8 +141,10 @@ async fn serve(config: &Config) -> Result<(), Failure> {
         stop.send(true).ok();
     })
     .await?;
-    // In-flight requests and the current dispatch round have finished; release the connections.
+    // In-flight requests and the current dispatch and expiry rounds have finished; release the
+    // connections.
     dispatching.await.ok();
+    sweeping.await.ok();
     pool.close().await;
     tracing::info!("stopped");
     Ok(())

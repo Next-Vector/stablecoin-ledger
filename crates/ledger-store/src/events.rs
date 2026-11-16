@@ -3,7 +3,7 @@
 //! payload is built in SQL from the rows just written, and the deliveries to the subscribed
 //! endpoints are queued with it.
 
-use ledger_core::StoreError;
+use ledger_core::{HoldId, StoreError};
 use sqlx::PgConnection;
 
 use crate::{EventType, backend};
@@ -98,6 +98,26 @@ pub(crate) async fn account_freeze_changed(
         &format!("account:{address}"),
         "jsonb_build_object('account', $3::text)",
         |query| query.bind(address.to_owned()),
+    )
+    .await
+}
+
+/// `hold.expired` for a hold just voided by expiry, naming the transaction that released it.
+pub(crate) async fn hold_expired(
+    db: &mut PgConnection,
+    hold: HoldId,
+    release: i64,
+) -> Result<(), StoreError> {
+    let hold = i64::try_from(hold.0).map_err(backend)?;
+    emit(
+        db,
+        EventType::HoldExpired,
+        &format!("hold:{hold}"),
+        "(SELECT jsonb_build_object( \
+             'hold_id', h.id, 'account', h.owner, 'asset', h.asset, \
+             'amount', h.amount::text, 'transaction_id', $4::bigint) \
+          FROM holds AS h WHERE h.id = $3)",
+        |query| query.bind(hold).bind(release),
     )
     .await
 }

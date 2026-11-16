@@ -57,3 +57,7 @@ required-features = ["integration"]
 [[test]]
 name = "outbox"
 required-features = ["integration"]
+
+[[test]]
+name = "hold_expiry"
+required-features = ["integration"]
