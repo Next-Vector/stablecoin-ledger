@@ -51,7 +51,7 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 
 | Service | Address |
 |---|---|
-| ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/docs/`, spec at `/openapi.json` |
+| ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/api`, spec at `/api-json` |
 | PostgreSQL 18 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
 | anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
 
@@ -67,7 +67,7 @@ curl -X POST -H 'Content-Type: application/json' \
 
 ## API keys
 
-Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
+Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/api` and `/api-json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
 
 ```sh
 ledger-api create-api-key --role write --name merchant-backend   # prints the key once
