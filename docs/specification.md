@@ -529,12 +529,11 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE holds (
-    id         UUID PRIMARY KEY,
-    account    TEXT NOT NULL,
+    id         BIGSERIAL PRIMARY KEY,      -- the funds sit on the account holds:{id}
+    owner      TEXT NOT NULL,              -- reserved from and returned to
     asset      TEXT NOT NULL,
-    amount     NUMERIC(39,0) NOT NULL,
-    remaining  NUMERIC(39,0) NOT NULL,
-    status     TEXT NOT NULL, -- active | captured | voided | expired
+    amount     NUMERIC(39,0) NOT NULL CHECK (amount > 0),  -- captured at most once, in part or whole
+    status     TEXT NOT NULL CHECK (status IN ('active', 'captured', 'voided', 'expired')),
     expires_at TIMESTAMPTZ
 );
 
