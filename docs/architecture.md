@@ -35,8 +35,6 @@ flowchart TB
 | `ledger-script` | Transaction DSL: parser and compiler to postings. Depends only on `ledger-core` |
 | `ledger-store` | PostgreSQL implementation of the storage trait: journal, materialized balances, migrations |
 | `ledger-api` | REST `/v1` (axum), API-key auth with roles, idempotency, OpenAPI 3.1; hosts the `webhook-dispatcher` worker (separate command) |
-| `signer-proto` | gRPC contract and the `Signer` trait |
-| `signer-local` | Local signer for anvil and Sepolia; refuses to start with a mainnet network |
 
 The chain module is a separate service in its own repository: it never reads or writes the ledger database, only the API, so the two scale, deploy and fail independently.
 
@@ -149,9 +147,11 @@ On-chain balances are read from both RPC sources. The result is stored; a non-ze
 flowchart LR
     subgraph public [Public repo — stablecoin-ledger]
         ledger[ledger-api]
+    end
+    subgraph chainrepo [Private repo — stablecoin-chain-watcher]
+        chain[chain module]
         local[signer-local<br/>testnets only]
     end
-    chain[chain module<br/>private repo]
     subgraph private [Private repo — signer, paid]
         srv[signer-server<br/>policies, audit, tenants]
         keys["key backends<br/>keystore · AWS/GCP KMS · HSM · Ledger · HD seed"]
@@ -166,7 +166,7 @@ flowchart LR
 
 - Private keys never enter this repository; the ledger does not talk to the signer at all.
 - Without a signer subscription the chain module is read-only towards the chain: deposits and reconciliation work, withdrawals are disabled; the ledger itself is unaffected.
-- `signer-local` implements the same contract, so the public repository builds and passes e2e tests on its own.
+- `signer-local` implements the same contract, so the chain module builds and passes e2e tests without the `signer` repository.
 
 ## Technology stack
 

@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 7 milestones and 38 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 39 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -9,7 +9,7 @@ MVP work broken into 7 milestones and 38 tasks (the blockchain milestones M6 and
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
-| [M5 · chain-watcher](#m5--chain-watcher) | 3 |
+| [M5 · chain-watcher](#m5--chain-watcher) | 4 |
 | [M8 · Polish](#m8--polish) | 3 |
 
 ## M0 · Scaffold
@@ -20,7 +20,7 @@ Workspace, CI, pre-commit hook, Docker Compose, README. Spec: docs/specification
 
 - [ ] Done
 - **Requirements:** NFR-11, §7
-- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64). `#![forbid(unsafe_code)]` in every crate.
+- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64, and the signer crates moved to the chain module, #65). `#![forbid(unsafe_code)]` in every crate.
 - **Done when:** `cargo build --workspace` and `cargo test --workspace` pass on a clean checkout.
 
 ### 2. CI pipeline: fmt, clippy, test, audit, deny
@@ -280,6 +280,13 @@ The ledger side of deposits: the registries the chain module relies on. Deposit 
 - **Requirements:** §3, §7
 - **Scope:** drop the empty `chain-watcher`, `withdrawer` and `reconciler` crates; describe them in the docs as the external chain module.
 - **Done when:** the workspace builds and passes without them; the docs no longer present them as ledger components.
+
+### 65. Move signer-proto and signer-local to stablecoin-chain-watcher
+
+- [ ] Done
+- **Requirements:** §7.1
+- **Scope:** drop the empty signer crates; the chain module builds them (stablecoin-chain-watcher#6). The ledger never signs.
+- **Done when:** the workspace builds and passes without them; the docs place the signer contract in the chain module.
 
 ## Moved to stablecoin-chain-watcher
 

@@ -18,9 +18,10 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 
 | Mode | What works |
 |---|---|
-| Public ledger, no subscription | Journal and internal transfers, deposit indexing, balances, reconciliation, webhooks. Read-only access to the blockchain: withdrawals are disabled |
-| Ledger + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
-| Development and CI | `signer-local` signs only on local and test networks (anvil, Sepolia) |
+| Public ledger | Journal and internal transfers, holds, balances, webhooks, registries of assets and deposit addresses. No blockchain access of its own |
+| Ledger + chain module (`stablecoin-chain-watcher`, private) | Everything above + deposit indexing and reconciliation; without a signing service the module is read-only towards the blockchain and withdrawals are disabled |
+| Ledger + chain module + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
+| Development and CI | `signer-local` (in the chain module) signs only on local and test networks (anvil, Sepolia) |
 
 **License:** Business Source License 1.1, converting to Apache-2.0 four years after each release (terms in section 12).
 
@@ -350,14 +351,13 @@ stablecoin-ledger/          # public repository
 │   ├── ledger-core      # types, invariants, holds (no I/O)
 │   ├── ledger-script    # DSL: parser, compiler to postings
 │   ├── ledger-store     # PostgreSQL: journal, balances, migrations
-│   ├── ledger-api       # REST API + webhook-dispatcher
-│   ├── signer-proto     # gRPC contract and Signer trait
-│   └── signer-local     # local signer for development and CI
+│   └── ledger-api       # REST API + webhook-dispatcher
 ├── contracts/           # mock USDC
 ├── benches/
 └── docker-compose.yml   # PostgreSQL + anvil + services
 
-stablecoin-chain-watcher/    # private repository: deposit indexer, withdrawals, reconciliation
+stablecoin-chain-watcher/    # private repository: deposit indexer, withdrawals, reconciliation,
+                             # signer-proto and signer-local
 
 signer/                      # private repository
 ├── crates/
@@ -382,14 +382,15 @@ signer/                      # private repository
 
 ### 7.1 Transaction signing: paid service (private `signer` repository)
 
-Signing is a paid service from a closed repository. The public ledger knows only its gRPC contract, never sees private keys, and without a connected service has read-only access to the blockchain.
+Signing is a paid service from a closed repository. Only the chain module talks to it; the public ledger never signs, never sees private keys and does not depend on the signer at all.
 
 | Repository | Visibility | Contents |
 |---|---|---|
-| `stablecoin-ledger` | Public | `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
+| `stablecoin-ledger` | Public | The ledger; no signing code |
+| `stablecoin-chain-watcher` | Private | Chain module: `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
 | `signer` | Private | gRPC server, key backends, deposit address models and sweeping, policy engine, audit log, multi-tenancy, signature metering for billing, deployment manifests |
 
-`signer-local` implements the same gRPC contract, so the public repository builds and passes e2e tests without access to the private one. It refuses to start if its configuration contains a mainnet network.
+`signer-local` implements the same gRPC contract, so the chain module builds and passes e2e tests without access to the `signer` repository. It refuses to start if its configuration contains a mainnet network.
 
 **Key types in `signer`:**
 
@@ -404,7 +405,7 @@ Signing is a paid service from a closed repository. The public ledger knows only
 
 secp256k1 is needed for EVM networks and Tron, ed25519 for Solana (after the MVP). Each key has a logical `key_id` (e.g. `hot/ethereum`) and a version; the backend for a `key_id` is set in the `signer` configuration.
 
-**gRPC contract** (`signer-proto`, public, part of the ledger):
+**gRPC contract** (`signer-proto`, in the chain module):
 
 ```protobuf
 service Signer {
@@ -620,7 +621,7 @@ Work proceeds in nine sequential stages; each ends with a tagged release and a w
 
 Stages 0–4 already make a complete ledger service with webhooks; deposit indexing, withdrawals and reconciliation (formerly stages 5–7) are planned in the private `stablecoin-chain-watcher` repository.
 
-The private `signer` repository evolves in parallel on its own plan; the public stages do not depend on it because they are tested with `signer-local`.
+The private `signer` repository evolves in parallel on its own plan; the ledger does not depend on it at all, and the chain module is tested with `signer-local`.
 
 ## 12. Risks, decisions and open questions
 
