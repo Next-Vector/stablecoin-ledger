@@ -10,6 +10,7 @@ A double-entry ledger engine in Rust for custodial services that hold stablecoin
 |---|---|
 | [docs/specification.md](docs/specification.md) | MVP specification: requirements, API, database schema, acceptance criteria |
 | [docs/architecture.md](docs/architecture.md) | How the services and flows fit together, with diagrams |
+| [docs/design-decisions.md](docs/design-decisions.md) | The design decisions behind the ledger and their trade-offs |
 | [docs/tasks.md](docs/tasks.md) | Milestones and tasks |
 
 ## Prerequisites

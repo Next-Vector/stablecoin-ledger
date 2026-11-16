@@ -62,6 +62,51 @@ Account layout used by the flows below:
 | `chain:{net}:in_flight` | Withdrawals broadcast but not yet final |
 | `platform:fees` · `platform:gas:{net}` | Platform fees · gas spent |
 
+## Writing a transaction
+
+Every write — a transfer, a hold, a script run, a reversal — follows the same path, and everything in the box commits or rolls back together:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as ledger-api
+    participant DB as PostgreSQL
+
+    C->>A: POST /v1/transactions + Idempotency-Key
+    A->>DB: key seen before? (same request → replay the first answer, other request → 409)
+    rect rgb(235, 245, 255)
+        Note over A,DB: one DB transaction
+        A->>DB: lock balance rows of every touched (account, asset), sorted
+        A->>DB: read flags of the sources (frozen, allow_negative), share-locked
+        Note over A: plan(): pure rules from ledger-core —<br/>frozen sources, overflow, no overdraft on the net result
+        A->>DB: insert transaction + postings (append-only)
+        A->>DB: update materialized balances
+        A->>DB: insert webhook event + deliveries (outbox)
+        A->>DB: record the Idempotency-Key with the transaction id
+    end
+    A-->>C: 201 + the transaction
+```
+
+- The rules live once, in `ledger_core::plan`, and the in-memory journal and PostgreSQL both call it, so the property tests of the core cover the database path too.
+- Rows are locked in `(account, asset)` order, so two transfers touching the same accounts queue instead of deadlocking, and a balance is never read stale.
+- A request that races another with the same key fails on the key's unique index, rolls back, and is answered from the winner's record: one write, two identical answers.
+
+## Hold lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: POST /v1/holds · wallet → holds:{id}
+    active --> captured: capture · holds:{id} → destination(s), rest → owner
+    active --> voided: void · holds:{id} → owner
+    active --> expired: expires_at passed · sweeper, holds:{id} → owner, hold.expired
+    captured --> [*]
+    voided --> [*]
+    expired --> [*]
+```
+
+Each transition is one ledger transaction, so the funds of a hold are always in exactly one place: the owner's wallet, `holds:{id}`, or the destinations. A capture may split between several destinations (a withdrawal's amount and fee). Past its deadline a hold can no longer be captured, only voided, until the sweeper (`FOR UPDATE SKIP LOCKED`, safe on any number of replicas) expires it.
+
 ## Deposit flow
 
 The ledger never generates deposit addresses: the address model depends on the key storage type and lives in the signer (or the client's own system). The ledger only registers the mapping, and the transaction registry reads it.
