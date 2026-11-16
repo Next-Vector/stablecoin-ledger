@@ -11,7 +11,7 @@ Stablecoin Ledger is a double-entry ledger engine in Rust for custodial stableco
 ## Key decisions at a glance
 
 - **Deposit addresses are not generated here.** The address model (CREATE2 forwarders, HD derivation, …) depends on the key storage type and lives in the private `signer` service; this repository only registers addresses (FR-20, FR-26, SIG-11).
-- **Two independent RPC sources per network.** A deposit is finalized only when both agree on the block hash (FR-27).
+- **Several independent indexers per network.** Each indexer is its own service on its own RPC source; the private transaction registry acts on an event only when the quorum agrees on it and its block hash (FR-27). The ledger only receives the resulting postings.
 - **Daily reconciliation** of the journal against on-chain balances (FR-40).
-- **Private keys never enter this repository.** Signing goes through the `Signer` gRPC contract; `signer-local` covers development and CI on test networks only (section 7.1).
+- **Private keys never enter this repository.** The ledger never signs; `stablecoin-withdrawer` signs through the `Signer` gRPC contract of the private signer, which also generates addresses (section 7.1).
 - **MVP network:** anvil for tests, Ethereum Sepolia with a mock USDC as the first real network.

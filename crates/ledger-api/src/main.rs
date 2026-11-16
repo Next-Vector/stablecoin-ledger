@@ -5,6 +5,9 @@
 //!   ledger-api rebuild-balances                          recompute balances from the journal (NFR-08)
 //!   ledger-api create-api-key --role <role> --name <n>   issue an API key (read | write | admin)
 //!   ledger-api revoke-api-key <key_id>                   revoke an API key
+//!   ledger-api register-asset --asset <id>               add an asset to the registry (§4.2)
+//!   ledger-api allow-negative <account>                  let a system account go negative (§4.3)
+//!   ledger-api disallow-negative <account>               stop it
 //!
 //! Configuration comes from the environment and is validated before anything starts.
 
@@ -14,12 +17,14 @@ use ledger_api::config::{Config, LogFormat};
 use ledger_api::dispatcher::{Dispatcher, DispatcherConfig};
 use ledger_api::expiry::HoldSweeper;
 use ledger_api::{AppState, app};
-use ledger_store::Role;
+use ledger_core::{AccountAddress, AssetId};
+use ledger_store::{PgStore, Role};
 use sqlx::PgPool;
 use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage: ledger-api [serve | migrate | rebuild-balances | \
-create-api-key --role <read|write|admin> --name <name> | revoke-api-key <key_id>]";
+create-api-key --role <read|write|admin> --name <name> | revoke-api-key <key_id> | \
+register-asset --asset <SYMBOL@network/decimals> | allow-negative <account> | disallow-negative <account>]";
 
 type Failure = Box<dyn std::error::Error>;
 
@@ -28,8 +33,20 @@ enum Command {
     Serve,
     Migrate,
     RebuildBalances,
-    CreateApiKey { role: Role, name: String },
-    RevokeApiKey { key_id: String },
+    CreateApiKey {
+        role: Role,
+        name: String,
+    },
+    RevokeApiKey {
+        key_id: String,
+    },
+    RegisterAsset {
+        asset: AssetId,
+    },
+    AllowNegative {
+        account: AccountAddress,
+        allowed: bool,
+    },
 }
 
 impl Command {
@@ -56,6 +73,15 @@ impl Command {
                     name: name?,
                 })
             }
+            ["register-asset", "--asset", asset] => Some(Self::RegisterAsset {
+                asset: asset.parse().ok()?,
+            }),
+            [command @ ("allow-negative" | "disallow-negative"), account] => {
+                Some(Self::AllowNegative {
+                    account: account.parse().ok()?,
+                    allowed: *command == "allow-negative",
+                })
+            }
             _ => None,
         }
     }
@@ -67,6 +93,9 @@ impl Command {
             Self::RebuildBalances => "rebuild-balances",
             Self::CreateApiKey { .. } => "create-api-key",
             Self::RevokeApiKey { .. } => "revoke-api-key",
+            Self::RegisterAsset { .. } => "register-asset",
+            Self::AllowNegative { allowed: true, .. } => "allow-negative",
+            Self::AllowNegative { allowed: false, .. } => "disallow-negative",
         }
     }
 }
@@ -95,6 +124,10 @@ async fn main() -> ExitCode {
         Command::RebuildBalances => rebuild_balances(&config).await,
         Command::CreateApiKey { role, name } => create_api_key(&config, role, &name).await,
         Command::RevokeApiKey { key_id } => revoke_api_key(&config, &key_id).await,
+        Command::RegisterAsset { asset } => register_asset(&config, &asset).await,
+        Command::AllowNegative { account, allowed } => {
+            allow_negative(&config, &account, allowed).await
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -182,6 +215,32 @@ async fn revoke_api_key(config: &Config, key_id: &str) -> Result<(), Failure> {
     }
     tracing::info!(key_id, "API key revoked");
     println!("revoked API key {key_id}");
+    Ok(())
+}
+
+async fn register_asset(config: &Config, asset: &AssetId) -> Result<(), Failure> {
+    let pool = PgPool::connect(&config.database_url).await?;
+    PgStore::new(pool).register_asset(asset).await?;
+    tracing::info!(%asset, "asset registered");
+    println!("registered {asset}");
+    Ok(())
+}
+
+async fn allow_negative(
+    config: &Config,
+    account: &AccountAddress,
+    allowed: bool,
+) -> Result<(), Failure> {
+    let pool = PgPool::connect(&config.database_url).await?;
+    PgStore::new(pool)
+        .set_allow_negative(account, allowed)
+        .await?;
+    tracing::info!(%account, allowed, "allow_negative changed");
+    if allowed {
+        println!("{account} may now go negative");
+    } else {
+        println!("{account} may no longer go negative");
+    }
     Ok(())
 }
 

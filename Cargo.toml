@@ -5,11 +5,6 @@ members = [
     "crates/ledger-script",
     "crates/ledger-store",
     "crates/ledger-api",
-    "crates/chain-watcher",
-    "crates/withdrawer",
-    "crates/reconciler",
-    "crates/signer-proto",
-    "crates/signer-local",
 ]
 
 [workspace.package]

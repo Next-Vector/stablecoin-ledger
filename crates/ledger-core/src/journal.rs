@@ -52,6 +52,7 @@ struct Recorded {
 pub struct Journal {
     balances: HashMap<BalanceKey, Balance>,
     frozen: HashSet<AccountAddress>,
+    negative_allowed: HashSet<AccountAddress>,
     transactions: Vec<Recorded>,
     pub(crate) holds: Vec<Hold>,
 }
@@ -82,6 +83,7 @@ impl Journal {
             &tx,
             |account, asset| self.balance(account, asset),
             |account| self.frozen.contains(account),
+            |account| self.negative_allowed.contains(account),
         )?;
         for change in changes {
             self.balances
@@ -175,6 +177,15 @@ impl Journal {
 
     pub fn unfreeze(&mut self, account: &AccountAddress) {
         self.frozen.remove(account);
+    }
+
+    /// Lets a system account (e.g. `platform:gas:ethereum`) go negative, or stops it.
+    pub fn set_allow_negative(&mut self, account: AccountAddress, allowed: bool) {
+        if allowed {
+            self.negative_allowed.insert(account);
+        } else {
+            self.negative_allowed.remove(&account);
+        }
     }
 }
 
@@ -366,6 +377,30 @@ mod tests {
             .unwrap();
         assert_eq!(next, TxId(2));
         assert!(journal.transaction(TxId(3)).is_none());
+    }
+
+    #[test]
+    fn only_accounts_allowed_to_may_go_negative() {
+        let mut journal = funded(100);
+        let gas = tx(vec![posting("platform:gas:ethereum", "world", 7, usdc())]);
+        assert_eq!(
+            journal.apply(gas.clone()),
+            Err(ApplyError::InsufficientFunds {
+                account: account("platform:gas:ethereum"),
+                asset: usdc()
+            })
+        );
+
+        journal.set_allow_negative(account("platform:gas:ethereum"), true);
+        journal.apply(gas.clone()).unwrap();
+        assert!(
+            journal
+                .balance(&account("platform:gas:ethereum"), &usdc())
+                .is_negative()
+        );
+
+        journal.set_allow_negative(account("platform:gas:ethereum"), false);
+        assert!(journal.apply(gas).is_err());
     }
 
     #[test]

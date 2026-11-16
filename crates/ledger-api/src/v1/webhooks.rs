@@ -28,26 +28,12 @@ pub enum EventTypeBody {
     TransactionCreated,
     #[serde(rename = "transaction.reverted")]
     TransactionReverted,
-    #[serde(rename = "deposit.seen")]
-    DepositSeen,
-    #[serde(rename = "deposit.confirmed")]
-    DepositConfirmed,
-    #[serde(rename = "deposit.orphaned")]
-    DepositOrphaned,
-    #[serde(rename = "withdrawal.broadcast")]
-    WithdrawalBroadcast,
-    #[serde(rename = "withdrawal.confirmed")]
-    WithdrawalConfirmed,
-    #[serde(rename = "withdrawal.failed")]
-    WithdrawalFailed,
     #[serde(rename = "hold.expired")]
     HoldExpired,
     #[serde(rename = "account.frozen")]
     AccountFrozen,
     #[serde(rename = "account.unfrozen")]
     AccountUnfrozen,
-    #[serde(rename = "reconciliation.mismatch")]
-    ReconciliationMismatch,
 }
 
 impl From<EventTypeBody> for EventType {
@@ -55,16 +41,9 @@ impl From<EventTypeBody> for EventType {
         match event {
             EventTypeBody::TransactionCreated => EventType::TransactionCreated,
             EventTypeBody::TransactionReverted => EventType::TransactionReverted,
-            EventTypeBody::DepositSeen => EventType::DepositSeen,
-            EventTypeBody::DepositConfirmed => EventType::DepositConfirmed,
-            EventTypeBody::DepositOrphaned => EventType::DepositOrphaned,
-            EventTypeBody::WithdrawalBroadcast => EventType::WithdrawalBroadcast,
-            EventTypeBody::WithdrawalConfirmed => EventType::WithdrawalConfirmed,
-            EventTypeBody::WithdrawalFailed => EventType::WithdrawalFailed,
             EventTypeBody::HoldExpired => EventType::HoldExpired,
             EventTypeBody::AccountFrozen => EventType::AccountFrozen,
             EventTypeBody::AccountUnfrozen => EventType::AccountUnfrozen,
-            EventTypeBody::ReconciliationMismatch => EventType::ReconciliationMismatch,
         }
     }
 }
@@ -74,16 +53,9 @@ impl From<EventType> for EventTypeBody {
         match event {
             EventType::TransactionCreated => EventTypeBody::TransactionCreated,
             EventType::TransactionReverted => EventTypeBody::TransactionReverted,
-            EventType::DepositSeen => EventTypeBody::DepositSeen,
-            EventType::DepositConfirmed => EventTypeBody::DepositConfirmed,
-            EventType::DepositOrphaned => EventTypeBody::DepositOrphaned,
-            EventType::WithdrawalBroadcast => EventTypeBody::WithdrawalBroadcast,
-            EventType::WithdrawalConfirmed => EventTypeBody::WithdrawalConfirmed,
-            EventType::WithdrawalFailed => EventTypeBody::WithdrawalFailed,
             EventType::HoldExpired => EventTypeBody::HoldExpired,
             EventType::AccountFrozen => EventTypeBody::AccountFrozen,
             EventType::AccountUnfrozen => EventTypeBody::AccountUnfrozen,
-            EventType::ReconciliationMismatch => EventTypeBody::ReconciliationMismatch,
         }
     }
 }

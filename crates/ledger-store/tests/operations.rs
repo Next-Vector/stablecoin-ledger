@@ -587,3 +587,47 @@ async fn concurrent_registrations_get_gapless_versions() {
     versions.sort_unstable();
     assert_eq!(versions, (1..=10).collect::<Vec<u32>>());
 }
+
+#[tokio::test]
+async fn only_flagged_system_accounts_may_go_negative() {
+    let (store, pool) = funded().await;
+    let gas = || tx(&[("platform:gas:ethereum", "world", 7)]);
+    let refused = store.apply(gas()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ledger_core::StoreError::Apply(
+                ApplyError::InsufficientFunds { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+
+    store
+        .set_allow_negative(&account("platform:gas:ethereum"), true)
+        .await
+        .unwrap();
+    store.apply(gas()).await.unwrap();
+    assert!(balance(&store, "platform:gas:ethereum").await.is_negative());
+    let shown = store
+        .account(&account("platform:gas:ethereum"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(shown.allow_negative);
+    // The journal still sums to zero, so a rebuild finds nothing to fix.
+    assert_eq!(ledger_store::rebuild_balances(&pool).await.unwrap(), 0);
+
+    store
+        .set_allow_negative(&account("platform:gas:ethereum"), false)
+        .await
+        .unwrap();
+    assert!(store.apply(gas()).await.is_err());
+    // An ordinary account is never let negative.
+    assert!(
+        store
+            .apply(tx(&[("users:1:wallet", "world", 101)]))
+            .await
+            .is_err()
+    );
+}

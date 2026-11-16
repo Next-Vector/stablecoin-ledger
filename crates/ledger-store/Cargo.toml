@@ -61,3 +61,7 @@ required-features = ["integration"]
 [[test]]
 name = "hold_expiry"
 required-features = ["integration"]
+
+[[test]]
+name = "chain_event_types"
+required-features = ["integration"]

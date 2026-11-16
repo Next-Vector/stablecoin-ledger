@@ -14,6 +14,8 @@ pub struct Account {
     pub address: AccountAddress,
     pub metadata: Metadata,
     pub frozen: bool,
+    /// A system account (e.g. a gas expense account) that may go negative.
+    pub allow_negative: bool,
     /// One entry per asset the account has ever moved, sorted by asset.
     pub balances: Vec<(AssetId, Balance)>,
 }
@@ -26,8 +28,8 @@ impl PgStore {
         address: &AccountAddress,
         at: Option<TxId>,
     ) -> Result<Option<Account>, StoreError> {
-        let flags: Option<(bool, Vec<String>, Vec<String>)> = sqlx::query_as(
-            "SELECT frozen, \
+        let flags: Option<(bool, bool, Vec<String>, Vec<String>)> = sqlx::query_as(
+            "SELECT frozen, allow_negative, \
                     coalesce((SELECT array_agg(key ORDER BY key) FROM jsonb_each_text(metadata)), '{}'), \
                     coalesce((SELECT array_agg(value ORDER BY key) FROM jsonb_each_text(metadata)), '{}') \
              FROM accounts WHERE address = $1",
@@ -68,11 +70,12 @@ impl PgStore {
             .map_err(backend)?,
         };
 
-        let (frozen, keys, values) = flags.unwrap_or_default();
+        let (frozen, allow_negative, keys, values) = flags.unwrap_or_default();
         Ok(Some(Account {
             address: address.clone(),
             metadata: keys.into_iter().zip(values).collect(),
             frozen,
+            allow_negative,
             balances: parse_balances(rows)?,
         }))
     }
@@ -95,6 +98,25 @@ impl PgStore {
         .await
         .map_err(backend)?;
         parse_balances(rows)
+    }
+
+    /// Lets a system account (e.g. `platform:gas:ethereum`) go negative, or stops it (§4.3
+    /// rule 2). An operator setting: it writes no event.
+    pub async fn set_allow_negative(
+        &self,
+        address: &AccountAddress,
+        allowed: bool,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO accounts (address, allow_negative) VALUES ($1, $2) \
+             ON CONFLICT (address) DO UPDATE SET allow_negative = EXCLUDED.allow_negative",
+        )
+        .bind(address.as_str())
+        .bind(allowed)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
     }
 
     /// Freezes or unfreezes an account; a frozen account cannot be a posting source (FR-08).

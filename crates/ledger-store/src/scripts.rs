@@ -12,7 +12,7 @@ use ledger_script::ast::Script;
 use ledger_script::{CompileError, ParseError, Vars};
 
 use crate::idempotency::{self, IdempotencyKey, Recorded};
-use crate::{OpError, PgStore, apply_in, backend, frozen_accounts, read_balances, tx_id};
+use crate::{OpError, PgStore, apply_in, backend, read_balances, source_flags, tx_id};
 
 /// A version of a stored script.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,11 +237,12 @@ impl PgStore {
             .iter()
             .map(|p| p.source().to_string())
             .collect();
-        let frozen = frozen_accounts(&mut db, &sources, false).await?;
+        let flags = source_flags(&mut db, &sources, false).await?;
         let balances = plan(
             &transaction,
             |account, asset| current(&balances, account, asset),
-            |account| frozen.contains(account.as_str()),
+            |account| flags.frozen.contains(account.as_str()),
+            |account| flags.negative_allowed.contains(account.as_str()),
         )
         .map_err(|error| OpError::Rejected(error.into()))?;
         Ok(DryRun {

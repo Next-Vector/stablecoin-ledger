@@ -46,6 +46,7 @@ pub struct Resources {
     /// A registered script version: name and version.
     pub script: Option<(String, u32)>,
     pub webhook: Option<u64>,
+    pub deposit_address: Option<u64>,
 }
 
 /// What a write records next to its key (database ids).
@@ -55,6 +56,7 @@ pub(crate) struct Recorded<'a> {
     pub hold: Option<i64>,
     pub script: Option<(&'a str, i32)>,
     pub webhook: Option<i64>,
+    pub deposit_address: Option<i64>,
 }
 
 /// What a key means for an incoming request.
@@ -77,16 +79,26 @@ impl PgStore {
             Option<String>,
             Option<i32>,
             Option<i64>,
+            Option<i64>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT request_hash, transaction_id, hold_id, script_name, script_version, webhook_id \
+            "SELECT request_hash, transaction_id, hold_id, script_name, script_version, webhook_id, \
+                    deposit_address_id \
              FROM idempotency_keys WHERE key = $1",
         )
         .bind(&key.key)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?;
-        let Some((request_hash, transaction, hold, script_name, script_version, webhook)) = row
+        let Some((
+            request_hash,
+            transaction,
+            hold,
+            script_name,
+            script_version,
+            webhook,
+            deposit_address,
+        )) = row
         else {
             return Ok(KeyStatus::New);
         };
@@ -106,6 +118,9 @@ impl PgStore {
             webhook: webhook
                 .map(|id| u64::try_from(id).map_err(backend))
                 .transpose()?,
+            deposit_address: deposit_address
+                .map(|id| u64::try_from(id).map_err(backend))
+                .transpose()?,
         }))
     }
 }
@@ -123,8 +138,9 @@ pub(crate) async fn record<E>(
     };
     let result = sqlx::query(
         "INSERT INTO idempotency_keys \
-         (key, request_hash, transaction_id, hold_id, script_name, script_version, webhook_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         (key, request_hash, transaction_id, hold_id, script_name, script_version, webhook_id, \
+          deposit_address_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&key.key)
     .bind(key.request_hash.as_slice())
@@ -133,6 +149,7 @@ pub(crate) async fn record<E>(
     .bind(recorded.script.map(|(name, _)| name))
     .bind(recorded.script.map(|(_, version)| version))
     .bind(recorded.webhook)
+    .bind(recorded.deposit_address)
     .execute(db)
     .await;
     match result {

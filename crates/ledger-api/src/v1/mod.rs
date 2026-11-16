@@ -3,6 +3,7 @@
 //! parse input, call `PgStore`, shape the reply.
 
 pub(crate) mod accounts;
+pub(crate) mod deposit_addresses;
 pub(crate) mod dto;
 pub(crate) mod holds;
 mod idempotency;
@@ -27,14 +28,22 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/v1/balances", get(accounts::aggregate_balances))
         .route("/v1/scripts", get(scripts::list_scripts))
         .route("/v1/scripts/{name}/versions", get(scripts::script_versions))
-        .route("/v1/scripts/dry-run", post(scripts::dry_run));
+        .route("/v1/scripts/dry-run", post(scripts::dry_run))
+        .route(
+            "/v1/deposit-addresses",
+            get(deposit_addresses::list_deposit_addresses),
+        );
     let write = Router::new()
         .route("/v1/transactions", post(transactions::create_transaction))
         .route("/v1/transactions/{id}/revert", post(transactions::revert))
         .route("/v1/holds", post(holds::create_hold))
         .route("/v1/holds/{id}/capture", post(holds::capture))
         .route("/v1/holds/{id}/void", post(holds::void))
-        .route("/v1/scripts", post(scripts::register_script));
+        .route("/v1/scripts", post(scripts::register_script))
+        .route(
+            "/v1/deposit-addresses",
+            post(deposit_addresses::register_deposit_address),
+        );
     let admin = Router::new()
         .route("/v1/accounts/{address}/freeze", post(accounts::freeze))
         .route("/v1/accounts/{address}/unfreeze", post(accounts::unfreeze))

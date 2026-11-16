@@ -166,7 +166,7 @@ async fn roles_are_enforced_hierarchically() {
 #[tokio::test]
 async fn operational_routes_stay_public() {
     let pool = fresh_pool().await;
-    for path in ["/health", "/health/ready", "/metrics", "/openapi.json"] {
+    for path in ["/health", "/health/ready", "/metrics", "/api-json", "/api/"] {
         let (status, _, _) = call(
             app(AppState::new(
                 pool.clone(),

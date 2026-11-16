@@ -15,8 +15,7 @@ A double-entry ledger engine in Rust for custodial services that hold stablecoin
 ## Prerequisites
 
 - [rustup](https://rustup.rs) — the toolchain version is pinned in `rust-toolchain.toml` and installed automatically
-- Docker with Compose
-- The shared Next-Vector Traefik proxy and its external `proxy` network (`docker network create proxy`), so dev services are reachable at `*.stablecoin-ledger.localhost`
+- Docker with Compose (integration tests run against their own PostgreSQL container)
 
 ## Getting started
 
@@ -43,38 +42,29 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 
 ## Dev stack
 
-```sh
-./run-dev up -d                # PostgreSQL + anvil + ledger-api (first start compiles, ~2 min)
-./scripts/check-dev-stack.sh   # smoke check
-./run-dev down                 # stop
-```
+The whole system — PostgreSQL, anvil, this ledger and the chain-side services — runs locally from the private [stablecoin-dev](https://github.com/Next-Vector/stablecoin-dev) repository, next to a checkout of this one. There the ledger answers at `http://ledger.stablecoin.localhost` (`/health`, `/health/ready`, `/metrics`, Swagger UI at `/api`, spec at `/api-json`).
 
-| Service | Address |
-|---|---|
-| ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/docs/`, spec at `/openapi.json` |
-| PostgreSQL 18 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
-| anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
+To run `ledger-api` natively against that PostgreSQL (or any other), load the environment and start it:
+
+```sh
+set -a; . ./.env; set +a
+cargo run -p ledger-api -- migrate
+cargo run -p ledger-api            # serve
+```
 
 Defaults live in `.env`; put host-specific overrides in `.env.local` (git-ignored). `.env.example` documents every key.
 
-anvil is a JSON-RPC endpoint, not a web page: send JSON-RPC over **POST** (or connect over WebSocket). A plain browser GET returns `Connection header did not include 'upgrade'`, which is expected.
-
-```sh
-curl -X POST -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-  http://anvil.stablecoin-ledger.localhost
-```
-
 ## API keys
 
-Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/docs/` and `/openapi.json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
+Every `/v1` route needs `Authorization: Bearer <key>` (routes, roles and error codes: [spec §8](docs/specification.md#8-rest-api); try them in Swagger UI via **Authorize**); `/health*`, `/metrics`, `/api` and `/api-json` are public. Roles are hierarchical: `admin` ⊇ `write` ⊇ `read`. Keys are issued and revoked by an operator with database access:
 
 ```sh
 ledger-api create-api-key --role write --name merchant-backend   # prints the key once
 ledger-api revoke-api-key <key_id>
+ledger-api allow-negative platform:gas:ethereum            # let a system account go negative (disallow-negative undoes it)
 ```
 
-In the dev stack run them inside the container: `./run-dev exec ledger-api cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
+In the stablecoin-dev stack run them inside the container: `./run-dev exec ledger cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
 
 ## Checks
 

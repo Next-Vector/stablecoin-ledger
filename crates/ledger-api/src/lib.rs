@@ -95,6 +95,8 @@ impl AppState {
         v1::webhooks::rotate_secret,
         v1::webhooks::delivery_log,
         v1::webhooks::redeliver,
+        v1::deposit_addresses::register_deposit_address,
+        v1::deposit_addresses::list_deposit_addresses,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)
@@ -127,7 +129,8 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/metrics", get(metrics::render))
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        // Swagger UI at the API root, the raw spec next to it.
+        .merge(SwaggerUi::new("/api").url("/api-json", ApiDoc::openapi()))
         .fallback(|| async { ApiError::not_found() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(axum::middleware::from_fn(metrics::track))

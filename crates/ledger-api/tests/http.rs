@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use ledger_api::{AppState, app};
 use serde_json::Value;
@@ -84,7 +84,7 @@ async fn readiness_fails_with_the_envelope_when_the_database_is_down() {
 
 #[tokio::test]
 async fn serves_the_openapi_31_document() {
-    let (status, _, body) = send(router(), Method::GET, "/openapi.json").await;
+    let (status, _, body) = send(router(), Method::GET, "/api-json").await;
     assert_eq!(status, StatusCode::OK);
     let spec = json(&body);
     assert!(
@@ -99,7 +99,7 @@ async fn serves_the_openapi_31_document() {
 
 #[tokio::test]
 async fn documents_the_v1_routes_behind_bearer_authentication() {
-    let (_, _, body) = send(router(), Method::GET, "/openapi.json").await;
+    let (_, _, body) = send(router(), Method::GET, "/api-json").await;
     let spec = json(&body);
     assert_eq!(
         spec["components"]["securitySchemes"]["api_key"]["scheme"],
@@ -124,6 +124,7 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
         "/v1/webhooks/{id}/rotate-secret",
         "/v1/webhooks/{id}/deliveries",
         "/v1/webhook-events/{id}/redeliver",
+        "/v1/deposit-addresses",
     ] {
         let operations = spec["paths"][path]
             .as_object()
@@ -141,7 +142,7 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
 
 #[tokio::test]
 async fn documents_the_idempotency_key_on_every_mutating_route() {
-    let (_, _, body) = send(router(), Method::GET, "/openapi.json").await;
+    let (_, _, body) = send(router(), Method::GET, "/api-json").await;
     let spec = json(&body);
     let mut mutating = 0;
     for (path, operations) in spec["paths"].as_object().unwrap() {
@@ -165,7 +166,7 @@ async fn documents_the_idempotency_key_on_every_mutating_route() {
             assert!(operation["responses"]["409"].is_object(), "{method} {path}");
         }
     }
-    assert_eq!(mutating, 13);
+    assert_eq!(mutating, 14);
 }
 
 #[tokio::test]
@@ -177,14 +178,23 @@ async fn v1_routes_require_an_api_key_without_touching_the_database_first() {
 }
 
 #[tokio::test]
-async fn serves_swagger_ui_at_docs() {
-    let (status, _, body) = send(router(), Method::GET, "/docs/").await;
+async fn serves_swagger_ui_at_the_api_root() {
+    // A bare /api lands on the docs page.
+    let (status, headers, _) = send(router(), Method::GET, "/api").await;
+    assert!(status.is_redirection(), "{status}");
+    assert_eq!(headers[header::LOCATION], "/api/");
+
+    let (status, _, body) = send(router(), Method::GET, "/api/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         String::from_utf8_lossy(&body)
             .to_lowercase()
             .contains("swagger")
     );
+    // The page loads the raw spec served next to it.
+    let (status, _, config) = send(router(), Method::GET, "/api/swagger-initializer.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&config).contains("/api-json"));
 }
 
 #[tokio::test]
