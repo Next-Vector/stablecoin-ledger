@@ -40,6 +40,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_ADDR: 0.0.0.0:8080
       LOG_FORMAT: json
+      WEBHOOK_SECRET_KEY: ${WEBHOOK_SECRET_KEY}
+      WEBHOOK_ALLOW_PRIVATE_URLS: ${WEBHOOK_ALLOW_PRIVATE_URLS:-false}
+      HOLD_EXPIRY_INTERVAL_SECONDS: ${HOLD_EXPIRY_INTERVAL_SECONDS:-30}
     volumes:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml

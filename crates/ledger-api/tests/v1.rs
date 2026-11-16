@@ -31,7 +31,7 @@ impl Api {
             read: key(Role::Read).await,
             write: key(Role::Write).await,
             admin: key(Role::Admin).await,
-            router: app(AppState::new(pool)),
+            router: app(AppState::new(pool, ledger_store::SecretBox::new([9; 32]))),
         }
     }
 

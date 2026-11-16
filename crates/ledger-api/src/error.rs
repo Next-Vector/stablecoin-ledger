@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use ledger_core::{ApplyError, HoldError, RevertError, StoreError};
 use ledger_script::{CompileError, ParseError};
-use ledger_store::{OpError, RegisterError, ScriptError};
+use ledger_store::{OpError, RegisterError, ScriptError, WebhookError};
 use serde::Serialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
@@ -204,6 +204,23 @@ impl From<RegisterError> for ApiError {
         match error {
             RegisterError::InvalidName => Self::invalid_field("name", error),
             RegisterError::Invalid(parse) => script_invalid(&parse),
+        }
+    }
+}
+
+impl From<WebhookError> for ApiError {
+    fn from(error: WebhookError) -> Self {
+        match error {
+            WebhookError::NotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "WEBHOOK_NOT_FOUND",
+                "no webhook subscription has this id",
+            ),
+            WebhookError::EventNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "WEBHOOK_EVENT_NOT_FOUND",
+                "no webhook event has this id",
+            ),
         }
     }
 }

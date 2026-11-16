@@ -11,6 +11,8 @@
 use std::process::ExitCode;
 
 use ledger_api::config::{Config, LogFormat};
+use ledger_api::dispatcher::{Dispatcher, DispatcherConfig};
+use ledger_api::expiry::HoldSweeper;
 use ledger_api::{AppState, app};
 use ledger_store::Role;
 use sqlx::PgPool;
@@ -116,11 +118,33 @@ fn init_tracing(format: LogFormat) {
 async fn serve(config: &Config) -> Result<(), Failure> {
     let pool = PgPool::connect(&config.database_url).await?;
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let dispatcher = Dispatcher::new(
+        pool.clone(),
+        config.webhook_secrets.clone(),
+        DispatcherConfig {
+            url_policy: config.webhook_url_policy,
+            ..DispatcherConfig::default()
+        },
+    )?;
+    let dispatching = tokio::spawn(dispatcher.run(stopped.clone()));
+    let sweeping =
+        tokio::spawn(HoldSweeper::new(pool.clone(), config.hold_expiry_interval).run(stopped));
     tracing::info!(addr = %config.bind_addr, "listening");
-    axum::serve(listener, app(AppState::new(pool.clone())))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    // In-flight requests have finished; release the database connections.
+    axum::serve(
+        listener,
+        app(AppState::new(pool.clone(), config.webhook_secrets.clone())
+            .with_url_policy(config.webhook_url_policy)),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        stop.send(true).ok();
+    })
+    .await?;
+    // In-flight requests and the current dispatch and expiry rounds have finished; release the
+    // connections.
+    dispatching.await.ok();
+    sweeping.await.ok();
     pool.close().await;
     tracing::info!("stopped");
     Ok(())

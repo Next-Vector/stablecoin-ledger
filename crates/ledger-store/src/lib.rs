@@ -2,19 +2,32 @@
 
 mod accounts;
 mod api_keys;
+mod deliveries;
+mod events;
 mod history;
 mod holds;
 mod idempotency;
 mod scripts;
+mod secret_box;
+mod webhooks;
 
 pub use accounts::Account;
 pub use api_keys::{
     ApiKeyError, AuthFailure, Authenticated, GeneratedKey, Role, authenticate, create_api_key,
     revoke_api_key,
 };
+pub use deliveries::{
+    AttemptOutcome, Delivery, DeliveryAttempt, DeliveryStatus, EventDelivery, MAX_ATTEMPTS,
+    UnknownDeliveryStatus, retry_delay,
+};
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
 pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus, Resources};
 pub use scripts::{DryRun, RegisterError, ScriptError, ScriptInfo, StoredScript};
+pub use secret_box::{SecretBox, SecretBoxError};
+pub use webhooks::{
+    EventType, PREVIOUS_SECRET_TTL_HOURS, UnknownEventType, WebhookChanges, WebhookEndpoint,
+    WebhookError,
+};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -23,6 +36,8 @@ use ledger_core::{
     StoreError, Transaction, TxId, plan,
 };
 use sqlx::migrate::MigrateError;
+
+use crate::idempotency::Recorded;
 use sqlx::{PgConnection, PgPool};
 
 /// The outcome of an operation a ledger rule can reject: `Rejected` carries the rule's error
@@ -145,7 +160,15 @@ impl PgStore {
     ) -> Result<TxId, OpError<ApplyError>> {
         let mut db = self.pool.begin().await?;
         let id = apply_in(&mut db, &tx, None).await?;
-        idempotency::record(&mut db, key, Some(id), None, None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(id)?)
     }
@@ -196,7 +219,16 @@ impl PgStore {
             .map_err(backend)?
             .reversed(metadata);
         let reversal_id = apply_in(&mut db, &reversal, Some(original)).await?;
-        idempotency::record(&mut db, key, Some(reversal_id), None, None).await?;
+        events::transaction_reverted(&mut db, original, reversal_id).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(reversal_id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(reversal_id)?)
     }
@@ -398,6 +430,7 @@ async fn apply_in(
     .await
     .map_err(backend)?;
 
+    events::transaction_created(db, id).await?;
     Ok(id)
 }
 
