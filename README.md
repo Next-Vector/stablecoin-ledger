@@ -88,6 +88,17 @@ cargo audit                               # CI only
 cargo deny check licenses bans sources    # CI only
 ```
 
+## Fuzzing
+
+The ledger-script DSL has two cargo-fuzz targets (nightly only; `rustup toolchain install nightly --profile minimal && cargo install --locked cargo-fuzz`):
+
+```sh
+./scripts/fuzz.sh parse 3600     # parser: never panics, errors point inside the text
+./scripts/fuzz.sh compile 3600   # compiler: deterministic, moves only the accounts it reports to be locked
+```
+
+The `Fuzz` workflow runs both for 10 minutes every week and on demand.
+
 ## License
 
 [Business Source License 1.1](LICENSE). Production use is allowed, except offering the ledger to third parties as a hosted or managed service and connecting a third-party signing service for mainnet. Each version converts to Apache-2.0 four years after its first public release.
