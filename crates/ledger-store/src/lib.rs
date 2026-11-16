@@ -2,6 +2,7 @@
 
 mod accounts;
 mod api_keys;
+mod events;
 mod history;
 mod holds;
 mod idempotency;
@@ -213,6 +214,7 @@ impl PgStore {
             .map_err(backend)?
             .reversed(metadata);
         let reversal_id = apply_in(&mut db, &reversal, Some(original)).await?;
+        events::transaction_reverted(&mut db, original, reversal_id).await?;
         idempotency::record(
             &mut db,
             key,
@@ -423,6 +425,7 @@ async fn apply_in(
     .await
     .map_err(backend)?;
 
+    events::transaction_created(db, id).await?;
     Ok(id)
 }
 

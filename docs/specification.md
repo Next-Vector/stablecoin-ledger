@@ -567,7 +567,7 @@ Additional tables for the blockchain integration:
 | `withdrawals` | State machine state, recipient address, nonce, tx hash, hold id |
 | `reconciliations` | Time, block, asset, expected and actual amount, difference |
 | `webhook_endpoints` | URL, event types, `enabled`, the current and previous signing secret encrypted at rest (AES-256-GCM with `WEBHOOK_SECRET_KEY`; HMAC signing needs the secret itself, so it cannot be hashed) and when the previous one stops signing |
-| `webhook_events` | Outbox: id, type, body, `sequence`, created at |
+| `webhook_events` | Outbox, written in the same DB transaction as the change: id (`evt_…`), type, resource (`transaction:42`, `account:users:1:wallet`), `sequence` within the resource, JSON payload, created at |
 | `webhook_deliveries` | Event × subscription: status, attempt number, next attempt time, last response code and error |
 
 A trigger on `transactions` and `postings` forbids `UPDATE` and `DELETE`.

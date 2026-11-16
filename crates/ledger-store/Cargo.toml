@@ -28,6 +28,7 @@ aes-gcm.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+serde_json.workspace = true
 
 [[test]]
 name = "migrations"
@@ -51,4 +52,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "operations"
+required-features = ["integration"]
+
+[[test]]
+name = "outbox"
 required-features = ["integration"]

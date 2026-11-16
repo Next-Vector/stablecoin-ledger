@@ -5,7 +5,7 @@ use ledger_core::{AccountAddress, AccountPattern, AssetId, Balance, Metadata, St
 use std::convert::Infallible;
 
 use crate::idempotency::{self, IdempotencyKey, Recorded};
-use crate::{OpError, PgStore, backend};
+use crate::{OpError, PgStore, backend, events};
 
 /// An account as the API shows it. Accounts exist implicitly from their first posting; a row in
 /// `accounts` (metadata, flags) exists only once something was set on it, e.g. a freeze.
@@ -106,14 +106,33 @@ impl PgStore {
         key: Option<&IdempotencyKey>,
     ) -> Result<(), OpError<Infallible>> {
         let mut db = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO accounts (address, frozen) VALUES ($1, $2) \
-             ON CONFLICT (address) DO UPDATE SET frozen = EXCLUDED.frozen",
-        )
-        .bind(address.as_str())
-        .bind(frozen)
-        .execute(&mut *db)
-        .await?;
+        // Serializes changes to one account even before its row exists, so an event is written
+        // exactly once per real change.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('freeze:' || $1, 0))")
+            .bind(address.as_str())
+            .execute(&mut *db)
+            .await?;
+        let current: Option<(bool,)> =
+            sqlx::query_as("SELECT frozen FROM accounts WHERE address = $1")
+                .bind(address.as_str())
+                .fetch_optional(&mut *db)
+                .await?;
+        if current.map(|(frozen,)| frozen).unwrap_or(false) != frozen {
+            sqlx::query(
+                "INSERT INTO accounts (address, frozen) VALUES ($1, $2) \
+                 ON CONFLICT (address) DO UPDATE SET frozen = EXCLUDED.frozen",
+            )
+            .bind(address.as_str())
+            .bind(frozen)
+            .execute(&mut *db)
+            .await?;
+            events::account_freeze_changed(&mut db, address.as_str(), frozen)
+                .await
+                .map_err(|error| match error {
+                    StoreError::Backend(source) => OpError::Backend(source),
+                    StoreError::Apply(rule) => OpError::Backend(Box::new(rule)),
+                })?;
+        }
         idempotency::record(&mut db, key, Recorded::default()).await?;
         db.commit().await?;
         Ok(())
