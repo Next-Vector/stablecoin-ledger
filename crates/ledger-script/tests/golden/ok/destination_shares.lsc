@@ -1,0 +1,15 @@
+vars {
+  portion $partner_cut
+}
+
+send [USDC@ethereum/6 1000] (
+  source = @users:1:wallet
+  destination = {
+    10% to @platform:fees
+    12.5% to @platform:tax
+    1/3 to @partners:1:wallet
+    50/100 to @partners:2:wallet
+    $partner_cut to @partners:3:wallet
+    remaining to @merchants:1:wallet
+  }
+)

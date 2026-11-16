@@ -269,7 +269,7 @@ set_tx_meta("order_id", "8812")
 - **FR-65.** Dry-run mode: returns the postings and resulting balances without writing to the journal.
 - **FR-66.** Stored scripts: a script is registered under a name and version, and a transaction references it by name; the script text and variable values are stored in the transaction metadata for audit.
 
-The DSL is a separate crate, `ledger-script` (parser built on `chumsky` or hand-written), depending only on `ledger-core`.
+The DSL is a separate crate, `ledger-script` (a hand-written lexer and recursive-descent parser), depending only on `ledger-core`. The grammar is documented in `crates/ledger-script/src/parser.rs`; the parser also checks that every variable is declared once and used where its type fits, that `remaining` is the last destination, and that a literal portion (`12.5%`, `1/3`) is at most 100%. Lines may carry `//` comments; strings accept the escapes `\"`, `\\` and `\n`.
 
 ## 6. Non-functional requirements
 

@@ -1,0 +1,125 @@
+Script {
+    vars: [
+        VarDecl {
+            name: "treasury",
+            ty: Account,
+        },
+        VarDecl {
+            name: "cap",
+            ty: Monetary,
+        },
+    ],
+    statements: [
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Literal(
+                        AssetId {
+                            symbol: "DAI",
+                            network: "ethereum",
+                            decimals: 18,
+                        },
+                    ),
+                    amount: Literal(
+                        1000000000000000000,
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "7",
+                                ),
+                                Text(
+                                    "bonus",
+                                ),
+                            ],
+                        ),
+                        max: Some(
+                            Literal {
+                                asset: Literal(
+                                    AssetId {
+                                        symbol: "DAI",
+                                        network: "ethereum",
+                                        decimals: 18,
+                                    },
+                                ),
+                                amount: Literal(
+                                    250,
+                                ),
+                            },
+                        ),
+                        overdraft: None,
+                    },
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "7",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                        max: Some(
+                            Var(
+                                "cap",
+                            ),
+                        ),
+                        overdraft: Some(
+                            Literal {
+                                asset: Literal(
+                                    AssetId {
+                                        symbol: "DAI",
+                                        network: "ethereum",
+                                        decimals: 18,
+                                    },
+                                ),
+                                amount: Literal(
+                                    10,
+                                ),
+                            },
+                        ),
+                    },
+                    SourceItem {
+                        account: Var(
+                            "treasury",
+                        ),
+                        max: None,
+                        overdraft: Some(
+                            Var(
+                                "cap",
+                            ),
+                        ),
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "merchants",
+                                ),
+                                Text(
+                                    "3",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+    ],
+}

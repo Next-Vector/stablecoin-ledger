@@ -1,0 +1,1 @@
+line 1, column 7: invalid asset `USDC@ethereum`: asset id must have the form SYMBOL@network/decimals

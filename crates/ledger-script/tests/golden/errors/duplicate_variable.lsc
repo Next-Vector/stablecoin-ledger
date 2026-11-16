@@ -1,0 +1,5 @@
+vars {
+  number $n
+  string $n
+}
+send [USDC@ethereum/6 1] (source = @world destination = @a)

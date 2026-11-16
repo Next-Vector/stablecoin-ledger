@@ -1,0 +1,18 @@
+vars {
+  account $buyer
+  account $merchant
+  monetary $price
+}
+
+send $price (
+  source = {
+    @users:{$buyer}:bonus max [USDC@ethereum/6 5000000]
+    @users:{$buyer}:wallet
+  }
+  destination = {
+    1% to @platform:fees
+    remaining to @merchants:{$merchant}:wallet
+  }
+)
+
+set_tx_meta("order_id", "8812")

@@ -941,6 +941,10 @@ dependencies = [
 [[package]]
 name = "ledger-script"
 version = "0.0.0"
+dependencies = [
+ "ledger-core",
+ "thiserror",
+]
 
 [[package]]
 name = "ledger-store"

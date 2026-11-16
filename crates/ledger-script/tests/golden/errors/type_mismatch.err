@@ -1,0 +1,1 @@
+line 4, column 6: variable `$price` has type account, but monetary is expected here
