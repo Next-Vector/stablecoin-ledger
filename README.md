@@ -44,7 +44,7 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 ## Dev stack
 
 ```sh
-./run-dev up -d                # PostgreSQL + anvil + ledger-api (first start compiles, ~2 min)
+./run-dev up -d                # PostgreSQL + ledger-api (first start compiles, ~2 min)
 ./scripts/check-dev-stack.sh   # smoke check
 ./run-dev down                 # stop
 ```
@@ -53,17 +53,8 @@ The first local build sets `core.hooksPath=.githooks` for the clone (skipped in 
 |---|---|
 | ledger-api | `http://api.stablecoin-ledger.localhost` — `/health`, `/health/ready`, `/metrics`, Swagger UI at `/api`, spec at `/api-json` |
 | PostgreSQL 18 | `localhost:5432` (see `DATABASE_URL` in `.env`) |
-| anvil (local EVM node, chain id 31337) | `http://anvil.stablecoin-ledger.localhost` |
 
 Defaults live in `.env`; put host-specific overrides in `.env.local` (git-ignored). `.env.example` documents every key.
-
-anvil is a JSON-RPC endpoint, not a web page: send JSON-RPC over **POST** (or connect over WebSocket). A plain browser GET returns `Connection header did not include 'upgrade'`, which is expected.
-
-```sh
-curl -X POST -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-  http://anvil.stablecoin-ledger.localhost
-```
 
 ## API keys
 
