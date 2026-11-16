@@ -83,3 +83,11 @@ required-features = ["integration"]
 [[test]]
 name = "hold_expiry"
 required-features = ["integration"]
+
+[[test]]
+name = "deposit_addresses"
+required-features = ["integration"]
+
+[[test]]
+name = "assets_cli"
+required-features = ["integration"]

@@ -94,7 +94,7 @@ Reserved namespaces:
 ### 4.2 Assets
 
 - Format: `SYMBOL@network/decimals`, e.g. `USDC@ethereum/6`, `DAI@ethereum/18`, `ETH@ethereum/18`.
-- The asset registry stores the contract address, chain id and finality threshold.
+- The asset registry lists the assets the ledger accounts for (`ledger-api register-asset`); chain details such as the contract address, chain id and finality threshold are kept by the chain scanning module.
 - The same coin on different networks is a different asset; postings between them are forbidden.
 
 ### 4.3 Transactions and postings
@@ -163,6 +163,8 @@ Each requirement has an `FR-xx` id referenced by tests and acceptance criteria.
 - **FR-25.** Restarting the indexer at any moment never causes a double or missed credit.
 - **FR-26.** Sweeping is performed outside the ledger: its mechanics depend on the address model (a CREATE2 factory call, or a signed transfer from each address after topping it up with gas) and are implemented in `signer` (SIG-11). The indexer recognizes a `Transfer` from a deposit address to a registered hot wallet as a sweep: user balances do not change; only the actual gas from the receipt is recorded (`platform:gas:{network}` → `world`).
 - **FR-27.** Every network is read from at least two independent RPC sources (different providers, or an own node plus a provider). A deposit becomes final only when both sources see the event in a block with the same hash and the finality threshold is reached. A hash mismatch, or one source being unavailable longer than a configured timeout, halts finalization on that network (deposits stay in pending) and raises an alert metric. The same rule applies to balance reads in reconciliation (FR-40) and to receipt reads in the withdrawer.
+
+Registration as implemented: the ledger only keeps accounts and stays independent of any chain. The operator adds the assets it accounts for with `ledger-api register-asset --asset <SYMBOL@network/decimals>`; chain details (chain id, contract, finality threshold) belong to the chain scanning module. `POST /v1/deposit-addresses` accepts only networks that have an asset and only wallet accounts (`…:wallet`; deposits arrive in the matching `…:pending` first). The address is an opaque string in its network's own format (1–255 bytes, no whitespace), stored and matched exactly as given — the ledger does not validate it. An address belongs to one account on its network (`409 DEPOSIT_ADDRESS_TAKEN`) and an account has one address per network (`409 ACCOUNT_HAS_DEPOSIT_ADDRESS`).
 
 ### 5.4 Withdrawals
 
@@ -474,15 +476,15 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 All mutating requests accept an `Idempotency-Key` header (1–255 visible ASCII characters, global across clients). The key is recorded in the same DB transaction as the write, so a retry never writes twice, even when it races the first request. A repeat of the same request (same method, path and JSON body, ignoring key order and whitespace) returns the same resource with the original status and an `Idempotent-Replayed: true` header; a resource that changed since (e.g. a captured hold) is shown as it is now. A rejected request records nothing, so retrying it is evaluated again. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
 
-Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and script dry-runs need the `read` role, journal writes (transactions, reversals, holds) and script registration `write`, and freezing accounts and managing webhooks `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
+Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and script dry-runs need the `read` role, journal writes (transactions, reversals, holds), script and deposit address registration `write`, and freezing accounts and managing webhooks `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
 
 | Status | Codes |
 |---|---|
 | 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount or script variable, `details.field` names the input), `SCRIPT_INVALID` (`details.line` and `details.column`) |
 | 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
 | 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_EVENT_NOT_FOUND` |
-| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
-| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch) |
+| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `DEPOSIT_ADDRESS_TAKEN`, `ACCOUNT_HAS_DEPOSIT_ADDRESS`, `IDEMPOTENCY_CONFLICT` |
+| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch), `UNKNOWN_NETWORK` (no asset is registered on the network) |
 
 Example request:
 
@@ -568,8 +570,8 @@ Additional tables for the blockchain integration:
 
 | Table | Contents |
 |---|---|
-| `assets` | Identifier, network, chain id, contract address, decimals, finality threshold |
-| `deposit_addresses` | On-chain address → user account |
+| `assets` | Identifier, network, decimals |
+| `deposit_addresses` | Network and address (an opaque string) → wallet account |
 | `chain_cursors` | Last processed block (number and hash) per network |
 | `deposits` | tx hash, log index, block, amount, state (`seen`, `final`, `orphaned`), links to journal transactions |
 | `withdrawals` | State machine state, recipient address, nonce, tx hash, hold id |

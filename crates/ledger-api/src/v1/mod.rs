@@ -3,6 +3,7 @@
 //! parse input, call `PgStore`, shape the reply.
 
 pub(crate) mod accounts;
+pub(crate) mod deposit_addresses;
 pub(crate) mod dto;
 pub(crate) mod holds;
 mod idempotency;
@@ -34,7 +35,11 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/v1/holds", post(holds::create_hold))
         .route("/v1/holds/{id}/capture", post(holds::capture))
         .route("/v1/holds/{id}/void", post(holds::void))
-        .route("/v1/scripts", post(scripts::register_script));
+        .route("/v1/scripts", post(scripts::register_script))
+        .route(
+            "/v1/deposit-addresses",
+            post(deposit_addresses::register_deposit_address),
+        );
     let admin = Router::new()
         .route("/v1/accounts/{address}/freeze", post(accounts::freeze))
         .route("/v1/accounts/{address}/unfreeze", post(accounts::unfreeze))

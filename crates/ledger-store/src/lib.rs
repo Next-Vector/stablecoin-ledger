@@ -2,7 +2,9 @@
 
 mod accounts;
 mod api_keys;
+mod assets;
 mod deliveries;
+mod deposit_addresses;
 mod events;
 mod history;
 mod holds;
@@ -16,10 +18,12 @@ pub use api_keys::{
     ApiKeyError, AuthFailure, Authenticated, GeneratedKey, Role, authenticate, create_api_key,
     revoke_api_key,
 };
+pub use assets::AssetError;
 pub use deliveries::{
     AttemptOutcome, Delivery, DeliveryAttempt, DeliveryStatus, EventDelivery, MAX_ATTEMPTS,
     UnknownDeliveryStatus, retry_delay,
 };
+pub use deposit_addresses::{DepositAddress, DepositAddressError};
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
 pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus, Resources};
 pub use scripts::{DryRun, RegisterError, ScriptError, ScriptInfo, StoredScript};

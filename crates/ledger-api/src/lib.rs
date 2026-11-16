@@ -95,6 +95,7 @@ impl AppState {
         v1::webhooks::rotate_secret,
         v1::webhooks::delivery_log,
         v1::webhooks::redeliver,
+        v1::deposit_addresses::register_deposit_address,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)
