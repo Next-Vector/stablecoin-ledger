@@ -1,0 +1,13 @@
+vars {
+  account $treasury
+  monetary $cap
+}
+
+send [DAI@ethereum/18 1000000000000000000] (
+  source = {
+    @users:7:bonus max [DAI@ethereum/18 250]
+    @users:7:wallet max $cap allowing overdraft up to [DAI@ethereum/18 10]
+    $treasury allowing overdraft up to $cap
+  }
+  destination = @merchants:3:wallet
+)

@@ -1,0 +1,4 @@
+vars {
+  portion $p
+}
+send [USDC@ethereum/6 10] (source = @world destination = { 80% to @a $p to @b remaining to @c })

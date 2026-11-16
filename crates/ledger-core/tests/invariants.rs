@@ -172,7 +172,7 @@ impl Model {
             .holds
             .iter()
             .filter_map(|&id| self.journal.get_hold(id))
-            .map(|hold| hold.account().clone());
+            .map(|hold| hold.account());
         (0..ACCOUNTS.len()).map(address).chain(holds).collect()
     }
 

@@ -1,0 +1,32 @@
+[package]
+name = "ledger-script-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "BUSL-1.1"
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own: fuzzing needs nightly and libFuzzer, which stay out of the main build.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ledger-core = { path = "../../ledger-core" }
+ledger-script = { path = ".." }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compile"
+path = "fuzz_targets/compile.rs"
+test = false
+doc = false
+bench = false

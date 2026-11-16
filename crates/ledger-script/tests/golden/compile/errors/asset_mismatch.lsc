@@ -1,0 +1,1 @@
+send [USDC@ethereum/6 10] (source = @world max [DAI@ethereum/18 5] destination = @a)

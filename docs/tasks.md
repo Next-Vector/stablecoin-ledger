@@ -1,14 +1,14 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 9 milestones and 44 tasks, following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. These tasks will be mirrored as GitHub issues on the project board.
+MVP work broken into 9 milestones and 48 tasks, following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
 | [M0 · Scaffold](#m0--scaffold) | 5 |
-| [M1 · ledger-core](#m1--ledger-core) | 6 |
+| [M1 · ledger-core](#m1--ledger-core) | 8 |
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
-| [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 8 |
-| [M4 · Webhooks](#m4--webhooks) | 4 |
+| [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
+| [M4 · Webhooks](#m4--webhooks) | 5 |
 | [M5 · chain-watcher](#m5--chain-watcher) | 6 |
 | [M6 · withdrawer](#m6--withdrawer) | 5 |
 | [M7 · reconciler](#m7--reconciler) | 2 |
@@ -98,6 +98,20 @@ Types, validation, in-memory journal, holds, property tests. No I/O. Spec §4, �
 - **Requirements:** §4.3.4, §10
 - **Scope:** `proptest` over random sequences of transfers, reversals and hold operations.
 - **Done when:** 10,000 random operations find no invariant violation.
+
+### 48. Git hooks: commit-msg, pre-push, auto-enable
+
+- [ ] Done
+- **Requirements:** CLAUDE.md commit and branching rules
+- **Scope:** commit-msg enforces `type(scope): summary (#N)`, one body paragraph at most and no `Co-Authored-By`; pre-push refuses pushes to `main` and runs `cargo audit` and `cargo deny`; the first local build sets `core.hooksPath=.githooks` (skipped in CI).
+- **Done when:** `scripts/test-hooks.sh` proves each hook rejects a bad case and accepts a good one; it runs in CI.
+
+### 49. Dependabot for Cargo, GitHub Actions and Docker images
+
+- [ ] Done
+- **Requirements:** CLAUDE.md supply-chain rules
+- **Scope:** weekly updates for `cargo`, `github-actions` and `docker-compose`, PRs into `dev`, minor and patch bumps grouped per ecosystem.
+- **Done when:** `.github/dependabot.yml` validates against the official schema in CI.
 
 ## M2 · ledger-store
 
@@ -198,6 +212,13 @@ REST API, idempotency, auth, OpenAPI, ledger-script DSL with dry-run. Spec §5.2
 - **Scope:** cargo-fuzz target for the parser.
 - **Done when:** 1 hour of fuzzing without panics.
 
+### 56. Docs: sync the task list and schema with the implementation
+
+- [ ] Done
+- **Requirements:** —
+- **Scope:** add the tasks created during the work to this list; align the §9 `holds` table in the specification with the migration.
+- **Done when:** this list matches the board and the specification matches the migrations.
+
 ## M4 · Webhooks
 
 Outbox, delivery worker, retries, HMAC signatures, delivery log. Spec §5.6, stage 4.
@@ -229,6 +250,13 @@ Outbox, delivery worker, retries, HMAC signatures, delivery log. Spec §5.6, sta
 - **Requirements:** FR-56, FR-57
 - **Scope:** Deliveries endpoint; `POST /v1/webhook-events/{id}/redeliver`; reject private/loopback/link-local URLs in production config.
 - **Done when:** Tests for log content, redelivery and SSRF rejection.
+
+### 57. Expire overdue holds automatically in PostgreSQL
+
+- [ ] Done
+- **Requirements:** FR-07
+- **Scope:** a periodic job voids holds past `expires_at` as `expired`, each in its own DB transaction with `FOR UPDATE SKIP LOCKED` so replicas can share the work, and emits `hold.expired`.
+- **Done when:** integration tests: a due hold is voided and its funds return; a hold not yet due is untouched; concurrent sweepers void each hold once.
 
 ## M5 · chain-watcher
 

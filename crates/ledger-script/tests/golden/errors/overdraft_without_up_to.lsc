@@ -1,0 +1,4 @@
+send [USDC@ethereum/6 1] (
+  source = @users:1:wallet allowing overdraft [USDC@ethereum/6 5]
+  destination = @a
+)

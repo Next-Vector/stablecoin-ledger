@@ -1,0 +1,118 @@
+Script {
+    vars: [
+        VarDecl {
+            name: "buyer",
+            ty: Account,
+        },
+        VarDecl {
+            name: "merchant",
+            ty: Account,
+        },
+        VarDecl {
+            name: "price",
+            ty: Monetary,
+        },
+    ],
+    statements: [
+        Send(
+            Send {
+                amount: Var(
+                    "price",
+                ),
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Var(
+                                    "buyer",
+                                ),
+                                Text(
+                                    "bonus",
+                                ),
+                            ],
+                        ),
+                        max: Some(
+                            Literal {
+                                asset: Literal(
+                                    AssetId {
+                                        symbol: "USDC",
+                                        network: "ethereum",
+                                        decimals: 6,
+                                    },
+                                ),
+                                amount: Literal(
+                                    5000000,
+                                ),
+                            },
+                        ),
+                        overdraft: None,
+                    },
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Var(
+                                    "buyer",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Portion(
+                            Literal(
+                                Ratio {
+                                    numerator: 1,
+                                    denominator: 100,
+                                },
+                            ),
+                        ),
+                        account: Template(
+                            [
+                                Text(
+                                    "platform",
+                                ),
+                                Text(
+                                    "fees",
+                                ),
+                            ],
+                        ),
+                    },
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "merchants",
+                                ),
+                                Var(
+                                    "merchant",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+        SetTxMeta {
+            key: "order_id",
+            value: Text(
+                "8812",
+            ),
+        },
+    ],
+}

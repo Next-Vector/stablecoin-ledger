@@ -1,0 +1,4 @@
+vars {
+  monetary $price
+}
+send $price (source = @world destination = @a)

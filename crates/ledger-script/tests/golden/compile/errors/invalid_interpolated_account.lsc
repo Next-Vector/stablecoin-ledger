@@ -1,0 +1,4 @@
+vars {
+  string $id
+}
+send [USDC@ethereum/6 1] (source = @world destination = @users:{$id}:wallet)

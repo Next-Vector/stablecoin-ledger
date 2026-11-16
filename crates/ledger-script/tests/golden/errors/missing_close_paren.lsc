@@ -1,0 +1,3 @@
+send [USDC@ethereum/6 100] (
+  source = @world
+  destination = @users:1:wallet

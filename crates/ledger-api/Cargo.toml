@@ -16,10 +16,51 @@ workspace = true
 integration = []
 
 [dependencies]
+ledger-core = { path = "../ledger-core" }
+ledger-script = { path = "../ledger-script" }
 ledger-store = { path = "../ledger-store" }
 sqlx.workspace = true
 tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+http-body-util.workspace = true
 
 [[test]]
 name = "rebuild_cli"
+required-features = ["integration"]
+
+[[test]]
+name = "readiness"
+required-features = ["integration"]
+
+[[test]]
+name = "auth"
+required-features = ["integration"]
+
+[[test]]
+name = "api_keys_cli"
+required-features = ["integration"]
+
+[[test]]
+name = "v1"
+required-features = ["integration"]
+
+[[test]]
+name = "idempotency"
+required-features = ["integration"]
+
+[[test]]
+name = "scripts"
 required-features = ["integration"]

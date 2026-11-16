@@ -1,0 +1,4 @@
+users:42:bonus -> platform:fees 1000000 USDC@ethereum/6
+users:42:bonus -> merchants:7:wallet 2000000 USDC@ethereum/6
+users:42:wallet -> merchants:7:wallet 97000000 USDC@ethereum/6
+meta order_id = 8812

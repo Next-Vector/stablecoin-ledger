@@ -1,0 +1,42 @@
+name: Fuzz
+
+# Weekly and on demand, so fuzzing never slows down pushes; each target runs for 10 minutes.
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, compile]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz ${{ matrix.target }}
+        run: ./scripts/fuzz.sh ${{ matrix.target }} 600
+
+      # The crash input goes to the log (no paid artifact storage); replay it locally.
+      - name: Print crash inputs
+        if: failure()
+        run: |
+          for crash in crates/ledger-script/fuzz/artifacts/${{ matrix.target }}/*; do
+            [ -f "$crash" ] || continue
+            echo "::group::$crash (base64)"
+            base64 "$crash"
+            echo "::endgroup::"
+          done

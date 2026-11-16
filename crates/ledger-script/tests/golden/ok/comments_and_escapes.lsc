@@ -1,0 +1,9 @@
+// A refund: two transfers and audit metadata.
+send [USDC@ethereum/6 5] ( // inline comment
+  source = @merchants:1:wallet
+  destination = @users:1:wallet
+)
+send [USDC@ethereum/6 1] (source = @platform:fees destination = @users:1:wallet)
+
+set_tx_meta("note", "say \"thanks\"\\n")
+set_tx_meta("reason", "line one\nline two")

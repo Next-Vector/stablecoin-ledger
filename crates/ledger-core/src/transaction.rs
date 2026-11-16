@@ -42,7 +42,7 @@ impl Transaction {
     }
 
     /// The reversal of this transaction: every posting mirrored, in the same order.
-    pub(crate) fn reversed(&self, metadata: Metadata) -> Self {
+    pub fn reversed(&self, metadata: Metadata) -> Self {
         Self {
             postings: self.postings.iter().map(Posting::mirrored).collect(),
             metadata,

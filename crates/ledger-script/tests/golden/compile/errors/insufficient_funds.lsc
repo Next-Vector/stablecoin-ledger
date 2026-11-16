@@ -1,0 +1,7 @@
+send [USDC@ethereum/6 10] (
+  source = {
+    @users:1:bonus
+    @users:1:wallet max [USDC@ethereum/6 2]
+  }
+  destination = @a
+)

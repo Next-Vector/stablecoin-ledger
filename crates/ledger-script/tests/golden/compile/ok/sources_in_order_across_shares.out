@@ -1,0 +1,3 @@
+users:1:bonus -> a 5 USDC@ethereum/6
+users:1:bonus -> b 2 USDC@ethereum/6
+users:1:wallet -> b 3 USDC@ethereum/6

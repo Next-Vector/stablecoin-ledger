@@ -111,7 +111,6 @@ pub struct Transaction {
     pub id: TxId,               // monotonic u64
     pub postings: Vec<Posting>, // 1..=256
     pub metadata: Metadata,
-    pub idempotency_key: Option<String>,
     pub reverts: Option<TxId>,
     pub timestamp: DateTime<Utc>,
 }
@@ -270,7 +269,18 @@ set_tx_meta("order_id", "8812")
 - **FR-65.** Dry-run mode: returns the postings and resulting balances without writing to the journal.
 - **FR-66.** Stored scripts: a script is registered under a name and version, and a transaction references it by name; the script text and variable values are stored in the transaction metadata for audit.
 
-The DSL is a separate crate, `ledger-script` (parser built on `chumsky` or hand-written), depending only on `ledger-core`.
+The DSL is a separate crate, `ledger-script` (a hand-written lexer and recursive-descent parser), depending only on `ledger-core`. The grammar is documented in `crates/ledger-script/src/parser.rs`; the parser also checks that every variable is declared once and used where its type fits, that `remaining` is the last destination, and that a literal portion (`12.5%`, `1/3`) is at most 100%. Lines may carry `//` comments; strings accept the escapes `\"`, `\\` and `\n`.
+
+Compilation (`ledger_script::compile`) is a pure function of the script, the variable values and the current balances, so it can run inside the DB transaction that applies its result:
+
+- Variable values are strings: account `users:42:wallet`, asset `USDC@ethereum/6`, monetary `USDC@ethereum/6 100`, number `100`, portion `12.5%` or `1/3`, string anything. Every declared variable needs a value and undeclared ones are rejected. Inside an address, `{$x}` takes an account, string or number value; the resulting address is validated.
+- Statements run in order, and each `send` sees the balances the previous ones left. All postings form one transaction.
+- Sources are drawn in order: each gives `min(still needed, max, balance + allowed overdraft)`. `@world` is unbounded; any other account goes below zero only with `allowing overdraft up to`, and the ledger still rejects a negative balance on accounts that may not hold one (section 4.3). Caps and overdrafts must be in the asset being sent.
+- Destinations: each portion gets `⌊amount × portion⌋`. `remaining` (at most one, last) takes the rest; without it the portions must sum to exactly 100% and the leftover base units go one each to the non-zero portions in order. Portion denominators are at most 10^18, and portions whose exact sum overflows `u128` are rejected.
+- Sources pay destinations in order (the first source pays the first destinations until it runs out). A move from an account to itself is skipped. More than 256 postings, or none, is an error.
+- `set_tx_meta` values are stored as given; a later key overwrites an earlier one.
+
+Running a script (`POST /v1/transactions` with `script` or `script_name` + `vars`) locks every balance row the script can touch — the source and destination accounts of every send, which depend on the script and its variables but not on balances — in one ordered statement, then compiles against those locked balances and applies the result in the same DB transaction, so concurrent runs neither deadlock nor act on stale balances. The transaction metadata records `script.source` and `script.vars` (JSON), plus `script.name` and `script.version` for a stored script; the `script.` prefix is reserved. A dry run (`POST /v1/scripts/dry-run`) reads the same balances without locks, applies the ledger rules and returns the postings, the metadata and the resulting balances, writing nothing. Stored scripts (`POST /v1/scripts`) are immutable versions numbered from 1 per name (`[a-z0-9_-]{1,64}`); a script must parse to be stored, and `script_name` runs the latest version unless `script_version` pins one.
 
 ## 6. Non-functional requirements
 
@@ -454,7 +464,17 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 `POST /v1/transactions` accepts either `postings`, or `script` (or `script_name`) + `vars` (section 5.7). Additional endpoints: `POST /v1/scripts/dry-run` (FR-65), `POST · GET /v1/scripts` and `GET /v1/scripts/{name}/versions` (FR-66).
 
-All mutating requests accept an `Idempotency-Key` header. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
+All mutating requests accept an `Idempotency-Key` header (1–255 visible ASCII characters, global across clients). The key is recorded in the same DB transaction as the write, so a retry never writes twice, even when it races the first request. A repeat of the same request (same method, path and JSON body, ignoring key order and whitespace) returns the same resource with the original status and an `Idempotent-Replayed: true` header; a resource that changed since (e.g. a captured hold) is shown as it is now. A rejected request records nothing, so retrying it is evaluated again. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
+
+Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and script dry-runs need the `read` role, journal writes (transactions, reversals, holds) and script registration `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
+
+| Status | Codes |
+|---|---|
+| 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount or script variable, `details.field` names the input), `SCRIPT_INVALID` (`details.line` and `details.column`) |
+| 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
+| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND` |
+| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
+| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch) |
 
 Example request:
 
@@ -478,8 +498,6 @@ The source of truth is the append-only `transactions` and `postings` tables; `ba
 ```sql
 CREATE TABLE transactions (
     id              BIGSERIAL PRIMARY KEY,
-    idempotency_key TEXT UNIQUE,
-    request_hash    BYTEA,
     reverts         BIGINT UNIQUE REFERENCES transactions(id),
     metadata        JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -511,13 +529,30 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE holds (
-    id         UUID PRIMARY KEY,
-    account    TEXT NOT NULL,
+    id         BIGSERIAL PRIMARY KEY,      -- the funds sit on the account holds:{id}
+    owner      TEXT NOT NULL,              -- reserved from and returned to
     asset      TEXT NOT NULL,
-    amount     NUMERIC(39,0) NOT NULL,
-    remaining  NUMERIC(39,0) NOT NULL,
-    status     TEXT NOT NULL, -- active | captured | voided | expired
+    amount     NUMERIC(39,0) NOT NULL CHECK (amount > 0),  -- captured at most once, in part or whole
+    status     TEXT NOT NULL CHECK (status IN ('active', 'captured', 'voided', 'expired')),
     expires_at TIMESTAMPTZ
+);
+
+CREATE TABLE scripts (
+    name       TEXT NOT NULL,                 -- [a-z0-9_-]{1,64}
+    version    INTEGER NOT NULL,              -- 1, 2, … per name
+    source     TEXT NOT NULL,                 -- ≤ 64 KB
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (name, version)
+);
+
+CREATE TABLE idempotency_keys (
+    key            TEXT PRIMARY KEY,          -- 1..255 visible ASCII
+    request_hash   BYTEA NOT NULL,            -- SHA-256 of method, path, canonical body
+    transaction_id BIGINT REFERENCES transactions(id),
+    hold_id        BIGINT REFERENCES holds(id),
+    script_name    TEXT,                      -- with script_version: a registered script
+    script_version INTEGER,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 

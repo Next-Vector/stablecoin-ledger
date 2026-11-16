@@ -1,0 +1,52 @@
+Script {
+    vars: [],
+    statements: [
+        Send(
+            Send {
+                amount: Literal {
+                    asset: Literal(
+                        AssetId {
+                            symbol: "USDC",
+                            network: "ethereum",
+                            decimals: 6,
+                        },
+                    ),
+                    amount: Literal(
+                        100,
+                    ),
+                },
+                source: [
+                    SourceItem {
+                        account: Template(
+                            [
+                                Text(
+                                    "world",
+                                ),
+                            ],
+                        ),
+                        max: None,
+                        overdraft: None,
+                    },
+                ],
+                destination: [
+                    DestinationItem {
+                        share: Remaining,
+                        account: Template(
+                            [
+                                Text(
+                                    "users",
+                                ),
+                                Text(
+                                    "1",
+                                ),
+                                Text(
+                                    "wallet",
+                                ),
+                            ],
+                        ),
+                    },
+                ],
+            },
+        ),
+    ],
+}
