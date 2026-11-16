@@ -17,7 +17,7 @@ fn router() -> Router {
         .acquire_timeout(Duration::from_millis(500))
         .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
         .unwrap();
-    app(AppState::new(pool))
+    app(AppState::new(pool, ledger_store::SecretBox::new([9; 32])))
 }
 
 async fn send(
@@ -119,6 +119,9 @@ async fn documents_the_v1_routes_behind_bearer_authentication() {
         "/v1/scripts",
         "/v1/scripts/dry-run",
         "/v1/scripts/{name}/versions",
+        "/v1/webhooks",
+        "/v1/webhooks/{id}",
+        "/v1/webhooks/{id}/rotate-secret",
     ] {
         let operations = spec["paths"][path]
             .as_object()
@@ -140,23 +143,27 @@ async fn documents_the_idempotency_key_on_every_mutating_route() {
     let spec = json(&body);
     let mut mutating = 0;
     for (path, operations) in spec["paths"].as_object().unwrap() {
-        // A dry-run is a POST that writes nothing, so it needs no idempotency key.
-        let Some(post) = operations
-            .get("post")
-            .filter(|_| path != "/v1/scripts/dry-run")
-        else {
-            continue;
-        };
-        mutating += 1;
-        let documented = post["parameters"].as_array().is_some_and(|parameters| {
-            parameters
-                .iter()
-                .any(|p| p["name"] == "Idempotency-Key" && p["in"] == "header")
-        });
-        assert!(documented, "POST {path}");
-        assert!(post["responses"]["409"].is_object(), "POST {path}");
+        for method in ["post", "patch", "delete"] {
+            // A dry-run is a POST that writes nothing, so it needs no idempotency key.
+            let Some(operation) = operations
+                .get(method)
+                .filter(|_| path != "/v1/scripts/dry-run")
+            else {
+                continue;
+            };
+            mutating += 1;
+            let documented = operation["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|p| p["name"] == "Idempotency-Key" && p["in"] == "header")
+                });
+            assert!(documented, "{method} {path}");
+            assert!(operation["responses"]["409"].is_object(), "{method} {path}");
+        }
     }
-    assert_eq!(mutating, 8);
+    assert_eq!(mutating, 12);
 }
 
 #[tokio::test]

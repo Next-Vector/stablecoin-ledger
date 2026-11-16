@@ -6,7 +6,7 @@ use ledger_core::{
 };
 use sqlx::PgConnection;
 
-use crate::idempotency::{self, IdempotencyKey};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
 use crate::{OpError, PgStore, apply_in, backend, tx_id};
 
 type HoldRow = (String, String, String, String, Option<i64>, i64);
@@ -50,7 +50,16 @@ impl PgStore {
         .bind(expires_at.map(i64::try_from).transpose().map_err(backend)?)
         .execute(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, Some(reserved), Some(id), None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(reserved),
+                hold: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok((hold, tx_id(reserved)?))
     }
@@ -156,7 +165,16 @@ async fn settle(
         .execute(&mut *db)
         .await?;
     let hold_id = i64::try_from(hold.id().0).map_err(backend)?;
-    idempotency::record(db, key, Some(settled), Some(hold_id), None).await?;
+    idempotency::record(
+        db,
+        key,
+        Recorded {
+            transaction: Some(settled),
+            hold: Some(hold_id),
+            ..Recorded::default()
+        },
+    )
+    .await?;
     let hold = Hold::new(
         hold.id(),
         hold.owner().clone(),

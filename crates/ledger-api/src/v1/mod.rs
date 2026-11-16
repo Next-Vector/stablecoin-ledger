@@ -1,5 +1,5 @@
 //! The /v1 journal routes (spec §8). Reads and script dry-runs need the `read` role, journal
-//! writes and script registration `write`, and freezing accounts `admin`. Handlers stay thin:
+//! writes and script registration `write`, and freezing accounts and managing webhooks `admin`. Handlers stay thin:
 //! parse input, call `PgStore`, shape the reply.
 
 pub(crate) mod accounts;
@@ -8,9 +8,10 @@ pub(crate) mod holds;
 mod idempotency;
 pub(crate) mod scripts;
 pub(crate) mod transactions;
+pub(crate) mod webhooks;
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use ledger_store::Role;
 
 use crate::{AppState, protect};
@@ -36,7 +37,19 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/v1/scripts", post(scripts::register_script));
     let admin = Router::new()
         .route("/v1/accounts/{address}/freeze", post(accounts::freeze))
-        .route("/v1/accounts/{address}/unfreeze", post(accounts::unfreeze));
+        .route("/v1/accounts/{address}/unfreeze", post(accounts::unfreeze))
+        .route(
+            "/v1/webhooks",
+            get(webhooks::list_webhooks).post(webhooks::create_webhook),
+        )
+        .route(
+            "/v1/webhooks/{id}",
+            patch(webhooks::update_webhook).delete(webhooks::delete_webhook),
+        )
+        .route(
+            "/v1/webhooks/{id}/rotate-secret",
+            post(webhooks::rotate_secret),
+        );
     protect(read, state, Role::Read)
         .merge(protect(write, state, Role::Write))
         .merge(protect(admin, state, Role::Admin))

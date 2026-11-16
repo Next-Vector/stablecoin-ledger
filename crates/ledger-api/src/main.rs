@@ -117,9 +117,12 @@ async fn serve(config: &Config) -> Result<(), Failure> {
     let pool = PgPool::connect(&config.database_url).await?;
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "listening");
-    axum::serve(listener, app(AppState::new(pool.clone())))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app(AppState::new(pool.clone(), config.webhook_secrets.clone())),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     // In-flight requests have finished; release the database connections.
     pool.close().await;
     tracing::info!("stopped");

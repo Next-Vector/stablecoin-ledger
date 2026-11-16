@@ -49,7 +49,10 @@ impl Api {
             .unwrap()
             .plaintext;
         Self {
-            router: app(AppState::new(pool.clone())),
+            router: app(AppState::new(
+                pool.clone(),
+                ledger_store::SecretBox::new([9; 32]),
+            )),
             pool,
             admin,
         }

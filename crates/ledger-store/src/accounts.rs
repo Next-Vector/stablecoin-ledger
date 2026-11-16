@@ -4,7 +4,7 @@ use ledger_core::{AccountAddress, AccountPattern, AssetId, Balance, Metadata, St
 
 use std::convert::Infallible;
 
-use crate::idempotency::{self, IdempotencyKey};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
 use crate::{OpError, PgStore, backend};
 
 /// An account as the API shows it. Accounts exist implicitly from their first posting; a row in
@@ -114,7 +114,7 @@ impl PgStore {
         .bind(frozen)
         .execute(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, None, None, None).await?;
+        idempotency::record(&mut db, key, Recorded::default()).await?;
         db.commit().await?;
         Ok(())
     }

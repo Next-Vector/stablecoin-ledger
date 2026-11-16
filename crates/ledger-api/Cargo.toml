@@ -34,6 +34,7 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 tower.workspace = true
 http-body-util.workspace = true
 
@@ -63,4 +64,8 @@ required-features = ["integration"]
 
 [[test]]
 name = "scripts"
+required-features = ["integration"]
+
+[[test]]
+name = "webhooks"
 required-features = ["integration"]

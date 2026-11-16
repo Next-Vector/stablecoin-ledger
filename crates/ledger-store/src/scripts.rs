@@ -11,7 +11,7 @@ use ledger_core::{ApplyError, BalanceChange, Metadata, Transaction, TxId, plan};
 use ledger_script::ast::Script;
 use ledger_script::{CompileError, ParseError, Vars};
 
-use crate::idempotency::{self, IdempotencyKey};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
 use crate::{OpError, PgStore, apply_in, backend, frozen_accounts, read_balances, tx_id};
 
 /// A version of a stored script.
@@ -91,7 +91,15 @@ impl PgStore {
         .bind(source)
         .fetch_one(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, None, None, Some((name, row.1))).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                script: Some((name, row.1)),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         stored(row).map_err(|error| OpError::Backend(Box::new(error)))
     }
@@ -200,7 +208,15 @@ impl PgStore {
         let balances = read_balances(&mut db, &keys, true).await?;
         let tx = compile(script, vars, &balances, audit)?;
         let id = apply_in(&mut db, &tx, None).await?;
-        idempotency::record(&mut db, key, Some(id), None, None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(id)?)
     }

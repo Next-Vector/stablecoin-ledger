@@ -13,7 +13,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::http::{HeaderName, StatusCode};
 use axum::routing::get;
-use ledger_store::PgStore;
+use ledger_store::{PgStore, SecretBox};
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -36,13 +36,16 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub struct AppState {
     pool: PgPool,
     store: PgStore,
+    secrets: SecretBox,
     metrics: PrometheusHandle,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool) -> Self {
+    /// `secrets` seals webhook signing secrets at rest.
+    pub fn new(pool: PgPool, secrets: SecretBox) -> Self {
         Self {
             store: PgStore::new(pool.clone()),
+            secrets,
             pool,
             metrics: metrics::handle(),
         }
@@ -73,6 +76,11 @@ impl AppState {
         v1::scripts::register_script,
         v1::scripts::list_scripts,
         v1::scripts::script_versions,
+        v1::webhooks::create_webhook,
+        v1::webhooks::list_webhooks,
+        v1::webhooks::update_webhook,
+        v1::webhooks::delete_webhook,
+        v1::webhooks::rotate_secret,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)

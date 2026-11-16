@@ -4,11 +4,15 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use ledger_store::SecretBox;
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
     pub bind_addr: SocketAddr,
     pub log_format: LogFormat,
+    /// Seals webhook signing secrets at rest; from `WEBHOOK_SECRET_KEY` (64 hex characters).
+    pub webhook_secrets: SecretBox,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +71,26 @@ impl Config {
             }
         };
 
-        if problems.is_empty() {
-            Ok(Self {
+        let webhook_secrets = match var("WEBHOOK_SECRET_KEY") {
+            None => {
+                problems.push("WEBHOOK_SECRET_KEY is required (64 hex characters)".to_owned());
+                None
+            }
+            Some(key) => SecretBox::from_hex(&key)
+                .map_err(|_| {
+                    problems.push("WEBHOOK_SECRET_KEY must be 64 hex characters".to_owned())
+                })
+                .ok(),
+        };
+
+        match (problems.is_empty(), webhook_secrets) {
+            (true, Some(webhook_secrets)) => Ok(Self {
                 database_url,
                 bind_addr,
                 log_format,
-            })
-        } else {
-            Err(ConfigError { problems })
+                webhook_secrets,
+            }),
+            _ => Err(ConfigError { problems }),
         }
     }
 }
@@ -82,6 +98,8 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -94,8 +112,11 @@ mod tests {
 
     #[test]
     fn reads_required_values_and_applies_defaults() {
-        let config =
-            Config::from_vars(vars(&[("DATABASE_URL", "postgres://u:p@db/ledger")])).unwrap();
+        let config = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://u:p@db/ledger"),
+            ("WEBHOOK_SECRET_KEY", KEY),
+        ]))
+        .unwrap();
         assert_eq!(config.database_url, "postgres://u:p@db/ledger");
         assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Json);
@@ -107,6 +128,7 @@ mod tests {
             ("DATABASE_URL", "postgres://u:p@db/ledger"),
             ("BIND_ADDR", "127.0.0.1:9000"),
             ("LOG_FORMAT", "pretty"),
+            ("WEBHOOK_SECRET_KEY", KEY),
         ]))
         .unwrap();
         assert_eq!(config.bind_addr, "127.0.0.1:9000".parse().unwrap());
@@ -120,11 +142,34 @@ mod tests {
             ("LOG_FORMAT", "xml"),
         ]))
         .unwrap_err();
-        assert_eq!(error.problems.len(), 3, "{error}");
+        assert_eq!(error.problems.len(), 4, "{error}");
         let message = error.to_string();
         assert!(message.contains("DATABASE_URL is required"), "{message}");
         assert!(message.contains("BIND_ADDR"), "{message}");
         assert!(message.contains("LOG_FORMAT"), "{message}");
+        assert!(
+            message.contains("WEBHOOK_SECRET_KEY is required"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_webhook_key_and_never_prints_it() {
+        let error = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://u:p@db/ledger"),
+            ("WEBHOOK_SECRET_KEY", "short"),
+        ]))
+        .unwrap_err();
+        assert_eq!(
+            error.problems,
+            ["WEBHOOK_SECRET_KEY must be 64 hex characters"]
+        );
+        let config = Config::from_vars(vars(&[
+            ("DATABASE_URL", "postgres://u:p@db/ledger"),
+            ("WEBHOOK_SECRET_KEY", KEY),
+        ]))
+        .unwrap();
+        assert!(!format!("{config:?}").contains("0123456789abcdef"));
     }
 
     #[test]
