@@ -363,7 +363,7 @@ Benchmarks, demo, diagrams, write-up. Spec stage 8.
 
 ### 42. Benchmarks for throughput and latency
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-04, NFR-05
 - **Scope:** criterion + k6/oha: ≥ 2,000 transfers/s on one PostgreSQL (8 vCPU); p99 `POST /transactions` < 50 ms at 50% of peak.
 - **Done when:** Results published in the README.

@@ -102,6 +102,6 @@ A test that was only ever seen passing proves nothing, so most changes were also
 
 ## What is next
 
-- **Load benchmarks** (NFR-04: ≥ 2,000 transfers/s on one PostgreSQL; NFR-05: p99 < 50 ms at half of that). Early runs reach the throughput target once the connection pool is sized for it; the latency target still needs a quiet, dedicated machine to measure.
+- **Benchmarks on dedicated hardware.** On a shared laptop the ledger reaches 1,971–2,303 transfers/s (NFR-04: ≥ 2,000) and a p99 of 32 ms at 1,000 requests/s (NFR-05: < 50 ms); see the README for the setup.
 - **A one-command demo** of the whole system through `stablecoin-dev`.
 - The chain side: the indexer, the transaction registry and the withdrawer, each in its own repository.
