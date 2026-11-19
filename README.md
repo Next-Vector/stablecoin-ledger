@@ -2,7 +2,7 @@
 
 A double-entry ledger engine in Rust for custodial services that hold stablecoins (USDC, USDT, DAI) on behalf of their users. Internal transfers settle instantly in an off-chain journal; the blockchain is touched only for deposits and withdrawals.
 
-> **Status:** early development — milestone M0 (scaffold). Nothing here is production-ready yet. See the [task list](docs/tasks.md) and the [project board](https://github.com/orgs/Next-Vector/projects/16).
+> **Status:** early development — milestones M0–M5 are done; M8 (polish) is in progress, with only the load benchmarks left. Nothing here is production-ready yet. See the [task list](docs/tasks.md) and the [project board](https://github.com/orgs/Next-Vector/projects/16).
 
 ## Documentation
 
