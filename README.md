@@ -2,7 +2,7 @@
 
 A double-entry ledger engine in Rust for custodial services that hold stablecoins (USDC, USDT, DAI) on behalf of their users. Internal transfers settle instantly in an off-chain journal; the blockchain is touched only for deposits and withdrawals.
 
-> **Status:** early development — milestone M0 (scaffold). Nothing here is production-ready yet. See the [task list](docs/tasks.md) and the [project board](https://github.com/orgs/Next-Vector/projects/16).
+> **Status:** early development — milestones M0–M5 are done; M8 (polish) is finished and awaiting merge. Nothing here is production-ready yet. See the [task list](docs/tasks.md) and the [project board](https://github.com/orgs/Next-Vector/projects/16).
 
 ## Documentation
 
@@ -10,6 +10,7 @@ A double-entry ledger engine in Rust for custodial services that hold stablecoin
 |---|---|
 | [docs/specification.md](docs/specification.md) | MVP specification: requirements, API, database schema, acceptance criteria |
 | [docs/architecture.md](docs/architecture.md) | How the services and flows fit together, with diagrams |
+| [docs/design-decisions.md](docs/design-decisions.md) | The design decisions behind the ledger and their trade-offs |
 | [docs/tasks.md](docs/tasks.md) | Milestones and tasks |
 
 ## Prerequisites
@@ -65,6 +66,27 @@ ledger-api allow-negative platform:gas:ethereum            # let a system accoun
 ```
 
 In the stablecoin-dev stack run them inside the container: `./run-dev exec ledger cargo run -q -p ledger-api -- create-api-key --role admin --name dev`.
+
+## Benchmarks
+
+`crates/ledger-bench` is a load generator for `POST /v1/transactions`: it seeds 10,000 wallets and sends 1-unit transfers between uniformly chosen pairs, measuring throughput at full speed (NFR-04) and latency at a fixed rate (NFR-05). `scripts/bench.sh` builds a release `ledger-api`, runs it against a throwaway database and benchmarks it:
+
+```sh
+BENCH_DATABASE_URL=postgres://ledger:ledger@localhost:5432/bench ./scripts/bench.sh --duration 30 --rate 1100
+```
+
+The script resets that database. Run it on an otherwise idle machine — the server, PostgreSQL and the generator compete for the same CPUs.
+
+### Results
+
+Measured on 2026-11-19 on a laptop (Intel Core i5-11260H, 6 cores / 12 threads, 62 GiB RAM, NVMe SSD) with the server, PostgreSQL 18.6 (in Docker, `fsync` on) and the generator on the same machine, next to other background load. 10,000 wallets, 1-unit transfers, connection pool of 32, 30 s per run:
+
+| Run | Result | Target |
+|---|---|---|
+| Throughput, 64 in flight | 1,971–2,303 transfers/s across runs, 0 failed; p99 57–59 ms | NFR-04: ≥ 2,000/s |
+| Latency at 1,000 requests/s (half of the target) | 0 failed; p50 4.5 ms, p95 12.2 ms, p99 32.4 ms | NFR-05: p99 < 50 ms |
+
+The spread in throughput comes from the background load; the specification assumes 8 vCPU for PostgreSQL alone, so dedicated hardware should do better.
 
 ## Checks
 

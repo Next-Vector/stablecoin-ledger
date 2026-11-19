@@ -21,6 +21,9 @@ pub struct Config {
     pub webhook_url_policy: UrlPolicy,
     /// How often overdue holds are expired (FR-07); `HOLD_EXPIRY_INTERVAL_SECONDS`, default 30.
     pub hold_expiry_interval: Duration,
+    /// Connections the server's pool may open to PostgreSQL, shared by the API, the webhook
+    /// dispatcher and the hold sweeper; `DATABASE_MAX_CONNECTIONS`, default 32.
+    pub database_max_connections: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,7 @@ impl std::error::Error for ConfigError {}
 impl Config {
     const DEFAULT_BIND_ADDR: &'static str = "0.0.0.0:8080";
     const DEFAULT_HOLD_EXPIRY_INTERVAL: Duration = Duration::from_secs(30);
+    const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 32;
 
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_vars(|key| std::env::var(key).ok())
@@ -116,6 +120,19 @@ impl Config {
             },
         };
 
+        let database_max_connections = match var("DATABASE_MAX_CONNECTIONS") {
+            None => Self::DEFAULT_DATABASE_MAX_CONNECTIONS,
+            Some(raw) => match raw.parse::<u32>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    problems.push(format!(
+                        "DATABASE_MAX_CONNECTIONS {raw:?} must be a positive number"
+                    ));
+                    Self::DEFAULT_DATABASE_MAX_CONNECTIONS
+                }
+            },
+        };
+
         match (problems.is_empty(), webhook_secrets) {
             (true, Some(webhook_secrets)) => Ok(Self {
                 database_url,
@@ -124,6 +141,7 @@ impl Config {
                 webhook_secrets,
                 webhook_url_policy,
                 hold_expiry_interval,
+                database_max_connections,
             }),
             _ => Err(ConfigError { problems }),
         }
@@ -159,6 +177,7 @@ mod tests {
         assert_eq!(config.log_format, LogFormat::Json);
         assert_eq!(config.webhook_url_policy, UrlPolicy::PublicOnly);
         assert_eq!(config.hold_expiry_interval, Duration::from_secs(30));
+        assert_eq!(config.database_max_connections, 32);
     }
 
     #[test]
@@ -170,8 +189,10 @@ mod tests {
             ("WEBHOOK_SECRET_KEY", KEY),
             ("WEBHOOK_ALLOW_PRIVATE_URLS", "true"),
             ("HOLD_EXPIRY_INTERVAL_SECONDS", "5"),
+            ("DATABASE_MAX_CONNECTIONS", "64"),
         ]))
         .unwrap();
+        assert_eq!(config.database_max_connections, 64);
         assert_eq!(config.hold_expiry_interval, Duration::from_secs(5));
         assert_eq!(config.bind_addr, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Pretty);
@@ -185,9 +206,11 @@ mod tests {
             ("LOG_FORMAT", "xml"),
             ("WEBHOOK_ALLOW_PRIVATE_URLS", "yes"),
             ("HOLD_EXPIRY_INTERVAL_SECONDS", "0"),
+            ("DATABASE_MAX_CONNECTIONS", "none"),
         ]))
         .unwrap_err();
-        assert_eq!(error.problems.len(), 6, "{error}");
+        assert_eq!(error.problems.len(), 7, "{error}");
+        assert!(error.to_string().contains("DATABASE_MAX_CONNECTIONS"));
         assert!(error.to_string().contains("HOLD_EXPIRY_INTERVAL_SECONDS"));
         assert!(error.to_string().contains("WEBHOOK_ALLOW_PRIVATE_URLS"));
         let message = error.to_string();

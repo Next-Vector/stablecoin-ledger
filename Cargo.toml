@@ -5,6 +5,7 @@ members = [
     "crates/ledger-script",
     "crates/ledger-store",
     "crates/ledger-api",
+    "crates/ledger-bench",
 ]
 
 [workspace.package]
