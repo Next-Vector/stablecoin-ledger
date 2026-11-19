@@ -31,7 +31,7 @@ impl Api {
             read: key(Role::Read).await,
             write: key(Role::Write).await,
             admin: key(Role::Admin).await,
-            router: app(AppState::new(pool)),
+            router: app(AppState::new(pool, ledger_store::SecretBox::new([9; 32]))),
         }
     }
 
@@ -298,6 +298,7 @@ async fn shows_accounts_now_and_at_a_past_transaction() {
     assert_eq!(status, StatusCode::OK, "{account}");
     assert_eq!(account["address"], "users:1:wallet");
     assert_eq!(account["frozen"], false);
+    assert_eq!(account["allow_negative"], false);
     assert_eq!(account["metadata"], json!({}));
     assert_eq!(account["balances"], json!({ USDC: "60" }));
 
@@ -415,6 +416,95 @@ async fn holds_capture_partially_and_void() {
     );
     let (status, body) = api.post("/v1/holds/99/void", json!({})).await;
     assert_error(status, &body, StatusCode::NOT_FOUND, "HOLD_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn a_capture_splits_between_destinations() {
+    let api = Api::new().await;
+    api.transfer(&[("world", "users:1:wallet", "100")]).await;
+    let (status, hold) = api
+        .post(
+            "/v1/holds",
+            json!({"account": "users:1:wallet", "amount": "30", "asset": USDC}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{hold}");
+
+    // A withdrawal capture: the amount in flight and the fee, the rest back to the owner.
+    let (status, captured) = api
+        .post(
+            "/v1/holds/1/capture",
+            json!({"destinations": [
+                {"destination": "chain:ethereum:in_flight", "amount": "25"},
+                {"destination": "platform:fees", "amount": "1"},
+            ]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{captured}");
+    assert_eq!(captured["status"], "captured");
+    assert_eq!(api.balance("chain:ethereum:in_flight").await, "25");
+    assert_eq!(api.balance("platform:fees").await, "1");
+    assert_eq!(api.balance("users:1:wallet").await, "74");
+    let (_, tx) = api
+        .get(&format!("/v1/transactions/{}", captured["transaction_id"]))
+        .await;
+    assert_eq!(tx["postings"].as_array().unwrap().len(), 3, "{tx}");
+}
+
+#[tokio::test]
+async fn split_captures_are_validated() {
+    let api = Api::new().await;
+    api.transfer(&[("world", "users:1:wallet", "100")]).await;
+    api.post(
+        "/v1/holds",
+        json!({"account": "users:1:wallet", "amount": "30", "asset": USDC}),
+    )
+    .await;
+    let part =
+        |destination: &str, amount: &str| json!({"destination": destination, "amount": amount});
+
+    let (status, body) = api
+        .post(
+            "/v1/holds/1/capture",
+            json!({"destinations": [part("chain:ethereum:in_flight", "25"), part("platform:fees", "6")]}),
+        )
+        .await;
+    assert_error(
+        status,
+        &body,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "HOLD_AMOUNT_EXCEEDED",
+    );
+
+    for (body, field) in [
+        // Exactly one of the two forms.
+        (
+            json!({"destination": "merchants:1:wallet", "amount": "1", "destinations": [part("platform:fees", "1")]}),
+            "destinations",
+        ),
+        (json!({}), "destinations"),
+        (json!({"destination": "merchants:1:wallet"}), "amount"),
+        (json!({"destinations": []}), "destinations"),
+        (
+            json!({"destinations": [part("platform:fees", "1"), part("not an account", "1")]}),
+            "destinations[1].destination",
+        ),
+        (
+            json!({"destinations": [part("platform:fees", "-1")]}),
+            "destinations[0].amount",
+        ),
+    ] {
+        let (status, response) = api.post("/v1/holds/1/capture", body.clone()).await;
+        assert_error(
+            status,
+            &response,
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+        );
+        assert_eq!(response["error"]["details"]["field"], field, "{body}");
+    }
+    // Nothing was captured.
+    assert_eq!(api.balance("users:1:wallet").await, "70");
 }
 
 #[tokio::test]

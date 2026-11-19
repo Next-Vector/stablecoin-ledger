@@ -18,9 +18,10 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 
 | Mode | What works |
 |---|---|
-| Public ledger, no subscription | Journal and internal transfers, deposit indexing, balances, reconciliation, webhooks. Read-only access to the blockchain: withdrawals are disabled |
-| Ledger + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
-| Development and CI | `signer-local` signs only on local and test networks (anvil, Sepolia) |
+| Public ledger | Journal and internal transfers, holds, balances, webhooks, registries of assets and deposit addresses. No blockchain access of its own |
+| Ledger + indexers + transaction registry (private) | Everything above + deposit indexing from several independent sources, deposit statuses and reconciliation; read-only towards the blockchain, withdrawals are disabled |
+| … + `stablecoin-withdrawer` + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
+| Development and CI | `signer-local` (in `stablecoin-withdrawer`) signs only on local and test networks (anvil, Sepolia); `stablecoin-dev` runs the whole system locally |
 
 **License:** Business Source License 1.1, converting to Apache-2.0 four years after each release (terms in section 12).
 
@@ -41,7 +42,7 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 
 ## 3. Scope
 
-The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network. Other networks come after the MVP.
+The ledger only keeps accounts and stays independent of any chain. Everything that touches a blockchain lives in private repositories with their own databases, and reaches the ledger only through its REST API like any other client: **indexers** (one repository per kind, several independent instances per network; `stablecoin-chain-watcher` is the first, for EVM) read the chain and report events; the **transaction registry** (`stablecoin-tx-registry`) keeps every on-chain transaction and its status, reaches a quorum across the indexers, posts to the ledger and reconciles; the **withdrawer** (`stablecoin-withdrawer`) sends withdrawals; the **signer** generates addresses and signs. `stablecoin-dev` runs them together locally. The chain side's MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network.
 
 **In the MVP:**
 
@@ -50,10 +51,8 @@ The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, 
 - PostgreSQL storage with atomic transactions;
 - REST API with idempotency;
 - webhooks for journal, deposit and withdrawal events, with guaranteed delivery and signatures;
-- deposits to registered addresses: indexing `Transfer` events from two independent RPC sources, two-phase crediting, reorg handling;
-- withdrawals through a hold, broadcasting the transaction from the hot wallet;
-- reconciliation of the journal against on-chain balances;
-- metrics, logging, Docker Compose for local runs.
+- registries of assets and deposit addresses (FR-20) for the transaction registry;
+- metrics, logging, a `Dockerfile`; the local stack of the whole system lives in the private `stablecoin-dev` repository.
 
 **After the MVP:**
 
@@ -61,6 +60,8 @@ The MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, 
 - freezing accounts based on issuer blocklists.
 
 **Out of scope for this repository:**
+
+- deposit indexing, withdrawals and on-chain reconciliation (sections 5.3–5.5): implemented by the indexers, the transaction registry and the withdrawer on top of this API;
 
 - production key storage (KMS, HSM, MPC): implemented in the private `signer` repository (section 7.1); this repository contains only the contract and a local signer for development;
 - deposit address generation and sweeping: the address model (CREATE2 forwarders, HD derivation, etc.) depends on the key storage type, so it lives in `signer` (section 7.1); the ledger only registers addresses (FR-20);
@@ -94,7 +95,7 @@ Reserved namespaces:
 ### 4.2 Assets
 
 - Format: `SYMBOL@network/decimals`, e.g. `USDC@ethereum/6`, `DAI@ethereum/18`, `ETH@ethereum/18`.
-- The asset registry stores the contract address, chain id and finality threshold.
+- The asset registry lists the assets the ledger accounts for (`ledger-api register-asset`); chain details such as the contract address, chain id and finality threshold are kept by the transaction registry.
 - The same coin on different networks is a different asset; postings between them are forbidden.
 
 ### 4.3 Transactions and postings
@@ -119,16 +120,18 @@ pub struct Transaction {
 Rules:
 
 1. A posting amount is strictly greater than zero; `source` and `destination` differ.
-2. A transaction is rejected if any account without `allow_negative` would go negative, or is frozen.
+2. A transaction is rejected if any account without `allow_negative` would go negative, or is frozen. `world` may always go negative; any other account only once an operator sets `allow_negative` on it (`ledger-api allow-negative <account>`, undone with `disallow-negative`), e.g. a gas expense account `platform:gas:{net}`. `GET /v1/accounts/{address}` shows the flag.
 3. Transactions are immutable; corrections are made only by reversal (`reverts`), and a transaction can be reversed once.
 4. Invariant: for every asset, the sum of all account balances (including `world`) is zero.
 
 ### 4.4 Holds
 
 - `hold(account, amount, asset, expires_at?)` moves funds to the technical account `holds:{hold_id}`.
-- `capture(hold_id, destination, amount ≤ hold)` spends the reserved funds; the remainder returns to the owner.
+- `capture(hold_id, destination, amount ≤ hold)` spends the reserved funds; the remainder returns to the owner. A capture may also split the funds between several destinations in one transaction (`destinations: [{destination, amount}, …]`, at most 255, together ≤ hold), e.g. a withdrawal's amount to `chain:{net}:in_flight` and its fee to `platform:fees`.
 - `void(hold_id)` returns everything; an expired hold is voided automatically.
 - Every hold operation is an ordinary journal transaction, so invariant 4.3.4 holds.
+
+Expiry as implemented: a sweeper inside `ledger-api` runs every `HOLD_EXPIRY_INTERVAL_SECONDS` (default 30) and voids active holds whose `expires_at` has passed as `expired`. Each hold settles in its own DB transaction together with its `hold.expired` event (`hold_id`, `account`, `asset`, `amount`, `transaction_id` of the release); rows are claimed with `FOR UPDATE SKIP LOCKED`, so any number of replicas can sweep and each hold expires once. Between its deadline and the next sweep a hold can no longer be captured (`409 HOLD_NOT_ACTIVE`) but can still be voided.
 
 ## 5. Functional requirements
 
@@ -149,22 +152,26 @@ Each requirement has an `FR-xx` id referenced by tests and acceptance criteria.
 
 - **FR-10.** A request with an already used key and the same body returns the first result without creating a new transaction.
 - **FR-11.** The same key with a different body returns `409 IDEMPOTENCY_CONFLICT`.
-- **FR-12.** For blockchain events the key is `{chain_id}:{tx_hash}:{log_index}`.
+- **FR-12.** For blockchain events the key is `{chain_id}:{tx_hash}:{log_index}`, with `:{attempt}` appended from the second crediting on (`…:{log_index}:2`, `:3`, …): a transfer reversed by a reorg (FR-24) and then included in another block is credited again under a new key, because the original key replays the reversed transaction. Each phase of one attempt has its own key (e.g. `…:final` for FR-23).
 
 ### 5.3 Deposits
 
 - **FR-20.** The ledger does not generate deposit addresses. The address model (CREATE2 forwarders, HD derivation, address per customer) depends on the chosen key storage type and is implemented in `signer` (section 7.1) or in the client's own system. An address is registered through the API as a mapping (network, address) → account; one address belongs to exactly one account. Registration needs no signature and works in read-only mode.
+The ledger's part of deposits is FR-20; FR-21–FR-27 are implemented outside the ledger: the indexers report on-chain events to the transaction registry (private repository `stablecoin-tx-registry`), which reaches a quorum and writes the postings below through `POST /v1/transactions` with the FR-12 idempotency key.
+
 - **FR-21.** The indexer reads `Transfer` events of registered tokens to deposit addresses and stores a cursor (number and hash of the last processed block).
 - **FR-22.** Event seen → posting `world → users:{id}:pending`.
 - **FR-23.** Finality threshold reached → posting `users:{id}:pending → users:{id}:wallet`.
-- **FR-24.** If the block containing the event is dropped by a reorg before finality, the FR-22 posting is reversed.
+- **FR-24.** If the block containing the event is dropped by a reorg before finality, the FR-22 posting is reversed. If the same transfer is later included in another block, it is credited again with the next attempt number in its FR-12 key.
 - **FR-25.** Restarting the indexer at any moment never causes a double or missed credit.
 - **FR-26.** Sweeping is performed outside the ledger: its mechanics depend on the address model (a CREATE2 factory call, or a signed transfer from each address after topping it up with gas) and are implemented in `signer` (SIG-11). The indexer recognizes a `Transfer` from a deposit address to a registered hot wallet as a sweep: user balances do not change; only the actual gas from the receipt is recorded (`platform:gas:{network}` → `world`).
-- **FR-27.** Every network is read from at least two independent RPC sources (different providers, or an own node plus a provider). A deposit becomes final only when both sources see the event in a block with the same hash and the finality threshold is reached. A hash mismatch, or one source being unavailable longer than a configured timeout, halts finalization on that network (deposits stay in pending) and raises an alert metric. The same rule applies to balance reads in reconciliation (FR-40) and to receipt reads in the withdrawer.
+- **FR-27.** Every network is watched by at least two independent indexers (separate instances on different RPC providers, or an own node plus a provider). The transaction registry acts on an event only when the configured quorum of indexers reports it identically, and a deposit becomes final only when they agree on the block hash and the finality threshold is reached. A hash mismatch, or an indexer silent longer than a configured timeout, halts finalization on that network (deposits stay in pending) and raises an alert metric. The same rule applies to balance reads in reconciliation (FR-40) and to the on-chain results of withdrawals.
+
+Registration as implemented: the ledger only keeps accounts and stays independent of any chain. The operator adds the assets it accounts for with `ledger-api register-asset --asset <SYMBOL@network/decimals>`; chain details (chain id, contract, finality threshold) belong to the transaction registry. `POST /v1/deposit-addresses` accepts only networks that have an asset and only wallet accounts (`…:wallet`; deposits arrive in the matching `…:pending` first). The address is an opaque string in its network's own format (1–255 bytes, no whitespace), stored and matched exactly as given — the ledger does not validate it. An address belongs to one account on its network (`409 DEPOSIT_ADDRESS_TAKEN`) and an account has one address per network (`409 ACCOUNT_HAS_DEPOSIT_ADDRESS`). `GET /v1/deposit-addresses` (role `read`) lists registrations in registration order, filtered by `network`, `address` (exact match) and `account`, with cursor paging; the transaction registry looks up the account of an address with `?network=…&address=…`, which returns at most one item.
 
 ### 5.4 Withdrawals
 
-A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
+Withdrawals are implemented outside the ledger with its holds and transactions: the transaction registry (private repository `stablecoin-tx-registry`) keeps the state machine and writes the postings, `stablecoin-withdrawer` signs (through the signer) and broadcasts, and the indexers report the on-chain result, matched by `(hot wallet, nonce)` because a re-sent transaction has a new hash. The table below is the posting contract. A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
 
 | State | Trigger | Journal posting |
 |---|---|---|
@@ -176,9 +183,11 @@ A withdrawal is a finite state machine (**FR-30**); every state transition and i
 - **FR-31.** Hot wallet nonces are allocated sequentially and persisted before broadcast, so a restart cannot cause a double send.
 - **FR-32.** A stuck transaction (not included within N minutes) is re-sent with the same nonce and a higher gas price.
 - **FR-33.** The recipient address is validated (format and checksum) before the hold is created.
-- **FR-34.** If no signing service is connected, `withdrawer` does not start and `POST /v1/withdrawals` returns `501 SIGNER_NOT_CONFIGURED`. All other ledger functions work without restriction.
+- **FR-34.** If no signing service is connected, withdrawals are not processed and the transaction registry's withdrawal endpoint returns `501 SIGNER_NOT_CONFIGURED`. The ledger works without restriction.
 
 ### 5.5 Reconciliation
+
+Reconciliation is implemented by the transaction registry (private repository `stablecoin-tx-registry`), with ledger balances read through the API and on-chain balances from the indexers' quorum.
 
 - **FR-40.** For every asset, once a day (default 00:00 UTC, schedule configurable), the following equality is checked:
 
@@ -200,38 +209,38 @@ External systems learn about changes through webhooks rather than polling the AP
 |---|---|
 | `transaction.created` | A new transaction was written to the journal |
 | `transaction.reverted` | A transaction was reversed |
-| `deposit.seen` | A deposit was seen on-chain; funds are in `pending` |
-| `deposit.confirmed` | A deposit reached finality; funds are in `wallet` |
-| `deposit.orphaned` | A deposit disappeared in a reorg and was reversed |
-| `withdrawal.broadcast` | A withdrawal transaction was broadcast |
-| `withdrawal.confirmed` | A withdrawal reached finality |
-| `withdrawal.failed` | A withdrawal failed; funds were returned |
 | `hold.expired` | A hold expired and was voided |
 | `account.frozen` · `account.unfrozen` | An account's frozen state changed |
-| `reconciliation.mismatch` | Reconciliation found a difference |
+
+Deposit, withdrawal and reconciliation events (`deposit.seen`, `withdrawal.confirmed`, `reconciliation.mismatch`, …) are emitted by the transaction registry, not by the ledger (#66).
 
 - **FR-52.** Transactional outbox: an event is written to `webhook_events` in the same DB transaction as the change it describes. An event is never lost on failure and never appears without the change.
 - **FR-53.** Delivery: HTTP POST with JSON, 10 s timeout, any 2xx is success. Failed attempts are retried with exponential backoff (30 s to 24 h, up to 15 attempts), after which the delivery is marked `failed`.
-- **FR-54.** Signature: header `X-Ledger-Signature: t=<unix-time>,v1=<hex>`, where `v1` = HMAC-SHA256 of `<t>.<body>` with the subscription secret. Receivers reject requests older than 5 min. Secret rotation: the old secret stays valid for 24 h.
+- **FR-54.** Signature: header `X-Ledger-Signature: t=<unix-time>,v1=<hex>`, where `v1` = HMAC-SHA256 of `<t>.<body>` with the subscription secret. Receivers reject requests older than 5 min. Secret rotation: the old secret stays valid for 24 h. The secret (`whsec_` + 64 hex) is generated by the ledger and returned only when a subscription is created or its secret rotated.
 - **FR-55.** Each event has a unique `id` (header `X-Ledger-Event-Id`) for receiver-side deduplication. Ordering across events is not guaranteed; the `sequence` field orders events within a resource.
 - **FR-56.** A log of delivery attempts (response code, latency, error) and manual redelivery through the API.
 - **FR-57.** SSRF protection: in production configuration, URLs resolving to private, loopback and link-local addresses are rejected.
+
+Delivery as implemented: an event is fanned out to the subscriptions enabled for its type at the moment it is written, in the same DB transaction (a subscription created or enabled later does not receive earlier events). The dispatcher runs inside `ledger-api`; any number of replicas can run it. It claims due deliveries with `FOR UPDATE SKIP LOCKED` and pushes their next attempt time forward by a lease (60 s, longer than the 10 s timeout), so a delivery lost with a crashed process is retried after the lease and an outcome that arrives after the lease is ignored. Redirects are not followed. A failed attempt (non-2xx, timeout or connection error) is retried after 30 s × 2^(attempt−1), capped at 24 h; the 15th failure marks the delivery `failed`. During a secret rotation the signature header carries one `v1` per valid secret, current first.
+
+Every attempt is logged with its response code (null when there was none), latency and error; `GET /v1/webhooks/{id}/deliveries` lists a subscription's log newest first. `POST /v1/webhook-events/{id}/redeliver` queues the event again, as a new delivery with a fresh retry schedule, for every subscription it was delivered to; a subscription that still has a pending delivery of the event keeps just that one.
+
+SSRF protection as implemented: unless `WEBHOOK_ALLOW_PRIVATE_URLS=true` (development), a subscription URL must resolve, and only to public addresses — loopback, private (RFC 1918, unique local), link-local, shared (100.64/10), unspecified, broadcast and multicast addresses, IPv4-mapped forms included, are rejected with `400 VALIDATION_ERROR`. The dispatcher checks again at every attempt: IP literals before sending, names through a resolver that refuses the connection if any address is internal (so DNS rebinding does not get through), with system proxies disabled.
 
 Example webhook body:
 
 ```json
 {
   "id": "evt_01JD3K9X2M",
-  "type": "deposit.confirmed",
+  "type": "hold.expired",
   "created_at": "2026-11-15T20:05:11Z",
-  "sequence": 2,
+  "sequence": 1,
   "data": {
-    "deposit_id": "dep_9f2c",
+    "hold_id": 77,
     "account": "users:42:wallet",
     "asset": "USDC@ethereum/6",
     "amount": "250000000",
-    "tx_hash": "0x8a1f…",
-    "ledger_tx_id": 10482
+    "transaction_id": 10482
   }
 }
 ```
@@ -305,30 +314,31 @@ Correctness takes priority over speed: no optimization is accepted if it weakens
 
 ## 7. Architecture and technology stack
 
-The system is a Cargo workspace with four services over a shared core; no service writes to the journal tables directly.
+The ledger is a Cargo workspace with one service, `ledger-api`, over a shared core. The chain side — indexers, the transaction registry, the withdrawer and the signer, each in its own private repository with its own database — reaches the ledger only through the REST API (the transaction registry is its only writer), never its database.
 
 ```mermaid
 flowchart TB
     client[Client service]
-    node["EVM node (anvil / RPC × 2)"]
+    node["EVM network (several RPC providers / nodes)"]
 
+    idx["indexers × N<br/>(stablecoin-chain-watcher, …)"]
+    reg["stablecoin-tx-registry<br/>transactions, statuses, quorum, reconciliation"]
+    wd["stablecoin-withdrawer<br/>nonce, broadcast"]
+    signer["signer<br/>addresses, signing"]
     api["ledger-api<br/>axum, REST, auth"]
-    watcher["chain-watcher<br/>deposits, reorg"]
-    withdrawer["withdrawer<br/>withdrawal state machine"]
-    reconciler["reconciler<br/>on-chain reconciliation"]
 
     core["ledger-core + ledger-store<br/>invariants, holds, atomic DB transactions"]
     pg[(PostgreSQL)]
 
     client -- "REST /v1" --> api
-    node -- "Transfer events" --> watcher
-    withdrawer -- "signed txs" --> node
-    node -- "balances" --> reconciler
+    node -- "events, balances" --> idx
+    idx -- "reports" --> reg
+    reg -- "withdrawal orders" --> wd
+    wd -- "sign" --> signer
+    wd -- "signed txs" --> node
+    reg -- "REST /v1" --> api
 
     api --> core
-    watcher --> core
-    withdrawer --> core
-    reconciler --> core
     core -- "journal + balances" --> pg
 ```
 
@@ -342,15 +352,14 @@ stablecoin-ledger/          # public repository
 │   ├── ledger-core      # types, invariants, holds (no I/O)
 │   ├── ledger-script    # DSL: parser, compiler to postings
 │   ├── ledger-store     # PostgreSQL: journal, balances, migrations
-│   ├── ledger-api       # REST API + webhook-dispatcher
-│   ├── chain-watcher    # deposit indexer
-│   ├── withdrawer       # withdrawal state machine, signer gRPC client
-│   ├── reconciler       # journal ↔ chain reconciliation
-│   ├── signer-proto     # gRPC contract and Signer trait
-│   └── signer-local     # local signer for development and CI
-├── contracts/           # mock USDC
+│   └── ledger-api       # REST API + webhook-dispatcher
 ├── benches/
-└── docker-compose.yml   # PostgreSQL + anvil + services
+└── .docker/             # integration-test PostgreSQL; the dev stack is in stablecoin-dev
+
+stablecoin-chain-watcher/    # private: EVM indexer (reports events to the registry), mock USDC
+stablecoin-tx-registry/      # private: on-chain transactions and statuses, quorum, ledger postings, reconciliation
+stablecoin-withdrawer/       # private: nonce, broadcast, signer-proto client, signer-local
+stablecoin-dev/              # private: docker compose for the whole system
 
 signer/                      # private repository
 ├── crates/
@@ -375,14 +384,15 @@ signer/                      # private repository
 
 ### 7.1 Transaction signing: paid service (private `signer` repository)
 
-Signing is a paid service from a closed repository. The public ledger knows only its gRPC contract, never sees private keys, and without a connected service has read-only access to the blockchain.
+Signing is a paid service from a closed repository. Only `stablecoin-withdrawer` talks to it; the public ledger never signs, never sees private keys and does not depend on the signer at all.
 
 | Repository | Visibility | Contents |
 |---|---|---|
-| `stablecoin-ledger` | Public | `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
+| `stablecoin-ledger` | Public | The ledger; no signing code |
+| `stablecoin-withdrawer` | Private | `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
 | `signer` | Private | gRPC server, key backends, deposit address models and sweeping, policy engine, audit log, multi-tenancy, signature metering for billing, deployment manifests |
 
-`signer-local` implements the same gRPC contract, so the public repository builds and passes e2e tests without access to the private one. It refuses to start if its configuration contains a mainnet network.
+`signer-local` implements the same gRPC contract, so the withdrawer builds and passes e2e tests without access to the `signer` repository. It refuses to start if its configuration contains a mainnet network.
 
 **Key types in `signer`:**
 
@@ -397,7 +407,7 @@ Signing is a paid service from a closed repository. The public ledger knows only
 
 secp256k1 is needed for EVM networks and Tron, ed25519 for Solana (after the MVP). Each key has a logical `key_id` (e.g. `hot/ethereum`) and a version; the backend for a `key_id` is set in the `signer` configuration.
 
-**gRPC contract** (`signer-proto`, public, part of the ledger):
+**gRPC contract** (`signer-proto`, in `stablecoin-withdrawer`):
 
 ```protobuf
 service Signer {
@@ -422,7 +432,7 @@ message SignTransactionResponse {
 
 **Signer requirements:**
 
-- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only `withdrawer` talks to the signer.
+- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only `stablecoin-withdrawer` talks to the signer.
 - **SIG-02.** The withdrawal order (id, network, token, amount, recipient) is signed by the ledger with a separate ed25519 key when the hold is created. The signer rejects requests without a valid order, or with a transaction that does not match it.
 - **SIG-03.** Policies before signing: allowed networks and token contracts, `transfer` calls only, per-transaction and daily limits per `key_id`.
 - **SIG-04.** Idempotency: a repeated request with the same `idempotency_key` returns the same signed transaction; one order cannot be signed twice with different transactions (except a re-send with the same nonce, FR-32).
@@ -452,9 +462,7 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 | POST | `/v1/holds` | Create a hold | FR-07 |
 | POST | `/v1/holds/{id}/capture` · `/void` | Capture or void a hold | FR-07 |
 | POST | `/v1/deposit-addresses` | Register a deposit address (network, address, account) | FR-20 |
-| POST | `/v1/withdrawals` | Create a withdrawal | FR-30, FR-33 |
-| GET | `/v1/withdrawals/{id}` | Withdrawal state and tx hash | FR-30 |
-| GET | `/v1/reconciliations` | Reconciliation history | FR-41 |
+| GET | `/v1/deposit-addresses?network=…&address=…&account=…` | List registrations; look up the account of an address | FR-20 |
 | POST · GET | `/v1/webhooks` | Create a subscription · list subscriptions | FR-50 |
 | PATCH · DELETE | `/v1/webhooks/{id}` | Update or delete a subscription | FR-50 |
 | POST | `/v1/webhooks/{id}/rotate-secret` | Rotate the secret | FR-54 |
@@ -466,15 +474,15 @@ The API is versioned with the `/v1` prefix, accepts and returns JSON, and is des
 
 All mutating requests accept an `Idempotency-Key` header (1–255 visible ASCII characters, global across clients). The key is recorded in the same DB transaction as the write, so a retry never writes twice, even when it races the first request. A repeat of the same request (same method, path and JSON body, ignoring key order and whitespace) returns the same resource with the original status and an `Idempotent-Replayed: true` header; a resource that changed since (e.g. a captured hold) is shown as it is now. A rejected request records nothing, so retrying it is evaluated again. Errors share one format: `{"error": {"code": "INSUFFICIENT_FUNDS", "message": "…", "details": {…}}}`.
 
-Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads and script dry-runs need the `read` role, journal writes (transactions, reversals, holds) and script registration `write`, and freezing accounts `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
+Every `/v1` route requires `Authorization: Bearer <API key>` (NFR-09). Reads (deposit address lookups included) and script dry-runs need the `read` role, journal writes (transactions, reversals, holds), script and deposit address registration `write`, and freezing accounts and managing webhooks `admin`; roles are hierarchical. Times are Unix seconds; `GET /v1/accounts/{address}?at={tx_id}` returns balances as of that transaction. List endpoints page with `limit` (1–500, default 50) and `cursor` (the previous page's `next_cursor`).
 
 | Status | Codes |
 |---|---|
 | 400 | `VALIDATION_ERROR` (malformed JSON, unknown fields, bad address/asset/amount or script variable, `details.field` names the input), `SCRIPT_INVALID` (`details.line` and `details.column`) |
 | 401 · 403 | `UNAUTHORIZED` (missing, invalid or revoked key) · `FORBIDDEN` (role too low) |
-| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND` |
-| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `IDEMPOTENCY_CONFLICT` |
-| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch) |
+| 404 | `TRANSACTION_NOT_FOUND`, `ACCOUNT_NOT_FOUND`, `HOLD_NOT_FOUND`, `SCRIPT_NOT_FOUND`, `WEBHOOK_NOT_FOUND`, `WEBHOOK_EVENT_NOT_FOUND` |
+| 409 | `ALREADY_REVERTED`, `HOLD_NOT_ACTIVE` (captured, voided or past its deadline), `DEPOSIT_ADDRESS_TAKEN`, `ACCOUNT_HAS_DEPOSIT_ADDRESS`, `IDEMPOTENCY_CONFLICT` |
+| 422 | `INSUFFICIENT_FUNDS`, `ACCOUNT_FROZEN`, `BALANCE_OVERFLOW`, `HOLD_AMOUNT_EXCEEDED`, `SCRIPT_REJECTED` (the script compiles to nothing valid: shares not 100%, no or too many postings, asset mismatch), `UNKNOWN_NETWORK` (no asset is registered on the network) |
 
 Example request:
 
@@ -556,19 +564,16 @@ CREATE TABLE idempotency_keys (
 );
 ```
 
-Additional tables for the blockchain integration:
+Additional tables:
 
 | Table | Contents |
 |---|---|
-| `assets` | Identifier, network, chain id, contract address, decimals, finality threshold |
-| `deposit_addresses` | On-chain address → user account |
-| `chain_cursors` | Last processed block (number and hash) per network |
-| `deposits` | tx hash, log index, block, amount, state (`seen`, `final`, `orphaned`), links to journal transactions |
-| `withdrawals` | State machine state, recipient address, nonce, tx hash, hold id |
-| `reconciliations` | Time, block, asset, expected and actual amount, difference |
-| `webhook_endpoints` | URL, event types, hashes of the current and previous secret, `enabled` |
-| `webhook_events` | Outbox: id, type, body, `sequence`, created at |
-| `webhook_deliveries` | Event × subscription: status, attempt number, next attempt time, last response code and error |
+| `assets` | Identifier, network, decimals |
+| `deposit_addresses` | Network and address (an opaque string) → wallet account |
+| `webhook_endpoints` | URL, event types, `enabled`, the current and previous signing secret encrypted at rest (AES-256-GCM with `WEBHOOK_SECRET_KEY`; HMAC signing needs the secret itself, so it cannot be hashed) and when the previous one stops signing |
+| `webhook_events` | Outbox, written in the same DB transaction as the change: id (`evt_…`), type, resource (`transaction:42`, `account:users:1:wallet`), `sequence` within the resource, JSON payload, created at |
+| `webhook_deliveries` | Delivery of an event to a subscription: status, attempt number, next attempt time, last response code and error; a redelivery adds a row, at most one pending per event and subscription |
+| `webhook_delivery_attempts` | Delivery attempt log: attempt number, success, response code, latency, error, time |
 
 A trigger on `transactions` and `postings` forbids `UPDATE` and `DELETE`.
 
@@ -600,7 +605,7 @@ The MVP is accepted when every item below passes in CI on every commit to `main`
 - [ ] After a full e2e scenario (deposits, transfers, withdrawals) reconciliation shows a difference of 0.
 - [ ] When one of the two RPC sources returns a different block hash or is unavailable, the deposit stays in pending and an alert is raised; after recovery it is finalized exactly once.
 - [ ] Benchmarks confirm NFR-04 and NFR-05; results are published in the README.
-- [ ] `docker compose up` brings up the whole system with a demo script in one command.
+- [ ] `./run-dev up -d` in `stablecoin-dev` brings up the whole system, with a demo script, in one command.
 - [ ] DSL: golden tests (script → expected postings) for every language construct, a property test for FR-63 rounding, and 1 hour of parser fuzzing (`cargo-fuzz`) without panics.
 
 ## 11. Implementation stages
@@ -614,14 +619,12 @@ Work proceeds in nine sequential stages; each ends with a tagged release and a w
 | 2. `ledger-store` | PostgreSQL, migrations, atomicity, concurrency test, rebuild-balances | NFR-01, NFR-02, NFR-08 | 2–3 |
 | 3. `ledger-api` | REST API, idempotency, authentication, OpenAPI, `ledger-script` DSL with dry-run | FR-10–FR-11, FR-60–FR-66, NFR-09 | 2 |
 | 4. Webhooks | Outbox, delivery worker, retries, HMAC signatures, delivery log | FR-50–FR-57 | 2 |
-| 5. `chain-watcher` | Deposit indexing, finality, reorgs on anvil, two RPC sources | FR-12, FR-20–FR-27 | 3 |
-| 6. `withdrawer` | Withdrawal state machine, nonces, re-send, failure tests, `signer-proto`, `signer-local`, signed orders | FR-30–FR-33, NFR-07 | 3 |
-| 7. `reconciler` | Daily reconciliation, alerts, metrics | FR-40–FR-42, NFR-12, NFR-13 | 1–2 |
+| 5. Deposit registry | Asset and deposit address registries for the transaction registry | FR-20 | 1 |
 | 8. Polish | Benchmarks, architecture diagrams, demo script, write-up article | NFR-04, NFR-05 | 2 |
 
-Total is roughly 20–23 weeks (the DSL adds about 2 weeks to stage 3). Stages 0–4 alone already make a complete portfolio project (a ledger service with webhooks, without the blockchain).
+Stages 0–4 already make a complete ledger service with webhooks; deposit indexing, withdrawals and reconciliation (formerly stages 5–7) are planned in the private indexer, `stablecoin-tx-registry` and `stablecoin-withdrawer` repositories.
 
-The private `signer` repository evolves in parallel on its own plan; the public stages do not depend on it because they are tested with `signer-local`.
+The private `signer` repository evolves in parallel on its own plan; the ledger does not depend on it at all, and the withdrawer is tested with `signer-local`.
 
 ## 12. Risks, decisions and open questions
 
@@ -631,7 +634,7 @@ The private `signer` repository evolves in parallel on its own plan; the public 
 | Deep reorg after the finality threshold | A credited deposit disappears on-chain | On Ethereum use the `finalized` block tag; reconciliation detects the difference |
 | Failure between signing and recording the withdrawal state | Double payout | Nonce and signed transaction are persisted before broadcast (FR-31); after restart only the same transaction is re-sent |
 | Non-standard tokens (USDT on Ethereum returns no `bool` from `transfer`) | Withdrawal errors | Check the outcome from the receipt and `Transfer` events, not the return value |
-| A single RPC provider returns wrong or missing data | Missed or false credits | Two independent RPC sources with cross-checking (FR-27) |
+| A single RPC provider returns wrong or missing data | Missed or false credits | Several independent indexers per network and a quorum in the transaction registry (FR-27) |
 | Scope creep | Project never reaches release | Strict MVP / post-MVP split (section 3); a release after every stage |
 
 **Accepted decisions** (2026-11-15):
@@ -640,7 +643,7 @@ The private `signer` repository evolves in parallel on its own plan; the public 
 |---|---|
 | First real network | Ethereum Sepolia |
 | Deposit addresses | The model depends on the key storage type and is implemented in `signer`, not in this repository; the ledger only registers addresses (FR-20, FR-26) |
-| On-chain data sources | Two independent RPC sources per network (FR-27) |
+| On-chain data sources | At least two independent indexers per network, quorum in the transaction registry (FR-27) |
 | Reconciliation frequency | Daily (FR-40) |
 | DSL | Part of the MVP (section 5.7) |
 | License | BSL 1.1: production use allowed, except offering the ledger to third parties as a hosted or managed service and except connecting a third-party signing service for mainnet; Change Date 4 years, then Apache-2.0 |

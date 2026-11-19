@@ -1,0 +1,31 @@
+[package]
+name = "ledger-bench"
+description = "Load generator for the ledger API: transfer throughput and latency (NFR-04, NFR-05)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The load test needs the run-integration PostgreSQL (see scripts/test-integration.sh).
+integration = []
+
+[dependencies]
+tokio = { workspace = true, features = ["time", "sync"] }
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ledger-api = { path = "../ledger-api" }
+ledger-store = { path = "../ledger-store" }
+sqlx.workspace = true
+axum.workspace = true
+
+[[test]]
+name = "load"
+required-features = ["integration"]

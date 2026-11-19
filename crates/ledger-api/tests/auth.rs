@@ -25,7 +25,7 @@ async fn fresh_pool() -> PgPool {
 
 /// One dummy route per required role, each behind `protect`.
 fn router(pool: &PgPool) -> Router {
-    let state = AppState::new(pool.clone());
+    let state = AppState::new(pool.clone(), ledger_store::SecretBox::new([9; 32]));
     let ok = || async { "ok" };
     Router::new()
         .merge(protect(
@@ -166,8 +166,16 @@ async fn roles_are_enforced_hierarchically() {
 #[tokio::test]
 async fn operational_routes_stay_public() {
     let pool = fresh_pool().await;
-    for path in ["/health", "/health/ready", "/metrics", "/openapi.json"] {
-        let (status, _, _) = call(app(AppState::new(pool.clone())), path, None).await;
+    for path in ["/health", "/health/ready", "/metrics", "/api-json", "/api/"] {
+        let (status, _, _) = call(
+            app(AppState::new(
+                pool.clone(),
+                ledger_store::SecretBox::new([9; 32]),
+            )),
+            path,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{path}");
     }
 }

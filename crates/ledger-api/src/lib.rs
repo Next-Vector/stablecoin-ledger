@@ -2,10 +2,13 @@
 
 mod auth;
 pub mod config;
+pub mod dispatcher;
 mod error;
+pub mod expiry;
 mod extract;
 mod health;
 mod metrics;
+pub mod ssrf;
 mod v1;
 
 use std::time::Duration;
@@ -13,9 +16,10 @@ use std::time::Duration;
 use axum::Router;
 use axum::http::{HeaderName, StatusCode};
 use axum::routing::get;
-use ledger_store::PgStore;
+use ledger_store::{PgStore, SecretBox};
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
+use ssrf::UrlPolicy;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
@@ -36,16 +40,27 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub struct AppState {
     pool: PgPool,
     store: PgStore,
+    secrets: SecretBox,
+    url_policy: UrlPolicy,
     metrics: PrometheusHandle,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool) -> Self {
+    /// `secrets` seals webhook signing secrets at rest. Webhook receivers must be public
+    /// addresses unless [`AppState::with_url_policy`] says otherwise.
+    pub fn new(pool: PgPool, secrets: SecretBox) -> Self {
         Self {
             store: PgStore::new(pool.clone()),
+            secrets,
+            url_policy: UrlPolicy::default(),
             pool,
             metrics: metrics::handle(),
         }
+    }
+
+    pub fn with_url_policy(mut self, url_policy: UrlPolicy) -> Self {
+        self.url_policy = url_policy;
+        self
     }
 }
 
@@ -73,6 +88,15 @@ impl AppState {
         v1::scripts::register_script,
         v1::scripts::list_scripts,
         v1::scripts::script_versions,
+        v1::webhooks::create_webhook,
+        v1::webhooks::list_webhooks,
+        v1::webhooks::update_webhook,
+        v1::webhooks::delete_webhook,
+        v1::webhooks::rotate_secret,
+        v1::webhooks::delivery_log,
+        v1::webhooks::redeliver,
+        v1::deposit_addresses::register_deposit_address,
+        v1::deposit_addresses::list_deposit_addresses,
     ),
     components(schemas(ErrorBody, health::HealthStatus)),
     modifiers(&BearerAuth)
@@ -105,7 +129,8 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health::live))
         .route("/health/ready", get(health::ready))
         .route("/metrics", get(metrics::render))
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        // Swagger UI at the API root, the raw spec next to it.
+        .merge(SwaggerUi::new("/api").url("/api-json", ApiDoc::openapi()))
         .fallback(|| async { ApiError::not_found() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(axum::middleware::from_fn(metrics::track))

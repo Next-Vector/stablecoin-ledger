@@ -2,19 +2,36 @@
 
 mod accounts;
 mod api_keys;
+mod assets;
+mod deliveries;
+mod deposit_addresses;
+mod events;
 mod history;
 mod holds;
 mod idempotency;
 mod scripts;
+mod secret_box;
+mod webhooks;
 
 pub use accounts::Account;
 pub use api_keys::{
     ApiKeyError, AuthFailure, Authenticated, GeneratedKey, Role, authenticate, create_api_key,
     revoke_api_key,
 };
+pub use assets::AssetError;
+pub use deliveries::{
+    AttemptOutcome, Delivery, DeliveryAttempt, DeliveryStatus, EventDelivery, MAX_ATTEMPTS,
+    UnknownDeliveryStatus, retry_delay,
+};
+pub use deposit_addresses::{DepositAddress, DepositAddressError};
 pub use history::{HistoryFilter, HistoryPage, InvalidPageSize, Page, RecordedTransaction};
 pub use idempotency::{IdempotencyKey, InvalidIdempotencyKey, KeyStatus, Resources};
 pub use scripts::{DryRun, RegisterError, ScriptError, ScriptInfo, StoredScript};
+pub use secret_box::{SecretBox, SecretBoxError};
+pub use webhooks::{
+    EventType, PREVIOUS_SECRET_TTL_HOURS, UnknownEventType, WebhookChanges, WebhookEndpoint,
+    WebhookError,
+};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -23,6 +40,8 @@ use ledger_core::{
     StoreError, Transaction, TxId, plan,
 };
 use sqlx::migrate::MigrateError;
+
+use crate::idempotency::Recorded;
 use sqlx::{PgConnection, PgPool};
 
 /// The outcome of an operation a ledger rule can reject: `Rejected` carries the rule's error
@@ -145,7 +164,15 @@ impl PgStore {
     ) -> Result<TxId, OpError<ApplyError>> {
         let mut db = self.pool.begin().await?;
         let id = apply_in(&mut db, &tx, None).await?;
-        idempotency::record(&mut db, key, Some(id), None, None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(id)?)
     }
@@ -196,7 +223,16 @@ impl PgStore {
             .map_err(backend)?
             .reversed(metadata);
         let reversal_id = apply_in(&mut db, &reversal, Some(original)).await?;
-        idempotency::record(&mut db, key, Some(reversal_id), None, None).await?;
+        events::transaction_reverted(&mut db, original, reversal_id).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(reversal_id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(reversal_id)?)
     }
@@ -246,20 +282,39 @@ pub(crate) async fn read_balances(
 
 /// Which of `accounts` are frozen; with `lock`, holds a share lock so a freeze cannot slip in
 /// before the caller commits.
-pub(crate) async fn frozen_accounts(
+/// The rule flags of posting sources: which are frozen, and which may go negative.
+#[derive(Debug, Default)]
+pub(crate) struct SourceFlags {
+    pub frozen: HashSet<String>,
+    pub negative_allowed: HashSet<String>,
+}
+
+/// Reads the flags of `accounts`; with `lock`, share-locks their rows so a flag cannot change
+/// while the transaction that relies on it commits.
+pub(crate) async fn source_flags(
     db: &mut PgConnection,
     accounts: &[String],
     lock: bool,
-) -> Result<HashSet<String>, StoreError> {
-    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT address FROM accounts WHERE frozen AND address = ANY($1){}",
+) -> Result<SourceFlags, StoreError> {
+    let rows: Vec<(String, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT address, frozen, allow_negative FROM accounts \
+         WHERE (frozen OR allow_negative) AND address = ANY($1){}",
         if lock { " FOR SHARE" } else { "" }
     )))
     .bind(accounts)
     .fetch_all(&mut *db)
     .await
     .map_err(backend)?;
-    Ok(rows.into_iter().map(|(address,)| address).collect())
+    let mut flags = SourceFlags::default();
+    for (address, frozen, allow_negative) in rows {
+        if frozen {
+            flags.frozen.insert(address.clone());
+        }
+        if allow_negative {
+            flags.negative_allowed.insert(address);
+        }
+    }
+    Ok(flags)
 }
 
 /// Rebuilds a posting read back from the journal.
@@ -302,7 +357,7 @@ async fn apply_in(
         .iter()
         .map(|p| p.source().to_string())
         .collect();
-    let frozen = frozen_accounts(db, &sources, true).await?;
+    let flags = source_flags(db, &sources, true).await?;
 
     let changes = plan(
         tx,
@@ -312,7 +367,8 @@ async fn apply_in(
                 .copied()
                 .unwrap_or_default()
         },
-        |account| frozen.contains(account.as_str()),
+        |account| flags.frozen.contains(account.as_str()),
+        |account| flags.negative_allowed.contains(account.as_str()),
     )?;
 
     let (keys, values): (Vec<String>, Vec<String>) = tx
@@ -398,6 +454,7 @@ async fn apply_in(
     .await
     .map_err(backend)?;
 
+    events::transaction_created(db, id).await?;
     Ok(id)
 }
 

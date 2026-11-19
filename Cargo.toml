@@ -5,11 +5,7 @@ members = [
     "crates/ledger-script",
     "crates/ledger-store",
     "crates/ledger-api",
-    "crates/chain-watcher",
-    "crates/withdrawer",
-    "crates/reconciler",
-    "crates/signer-proto",
-    "crates/signer-local",
+    "crates/ledger-bench",
 ]
 
 [workspace.package]
@@ -41,6 +37,9 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 http-body-util = "0.1.5"
 getrandom = "0.4.3"
 sha2 = "0.11.1"
+aes-gcm = "0.10.3"
+hmac = "0.13.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 subtle = "2.6.1"
 hex = "0.4.3"
 proptest = "1.12.0"

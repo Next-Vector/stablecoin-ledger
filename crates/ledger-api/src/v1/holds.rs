@@ -8,7 +8,8 @@ use ledger_core::{AccountAddress, AssetId, Hold, HoldError, HoldId, TxId};
 use ledger_store::OpError;
 
 use super::dto::{
-    CaptureHoldRequest, CreateHoldRequest, HoldResponse, MetadataRequest, parse, parse_amount,
+    CaptureDestination, CaptureHoldRequest, CreateHoldRequest, HoldResponse, MetadataRequest,
+    parse, parse_amount,
 };
 use super::idempotency::{self, Outcome};
 use crate::AppState;
@@ -47,7 +48,8 @@ pub async fn create_hold(
 
 /// Capture a hold
 ///
-/// Sends up to the held amount to the destination; the rest returns to the owner.
+/// Sends up to the held amount to the destination — or splits it between several destinations in
+/// one transaction — and returns the rest to the owner.
 #[utoipa::path(
     post, path = "/v1/holds/{id}/capture", tag = "holds",
     params(("Idempotency-Key" = Option<String>, Header, description = "Retry-safe key (1–255 visible ASCII); a repeat returns the first result"), ("id" = u64, Path, description = "Hold id")),
@@ -66,13 +68,10 @@ pub async fn capture(
     PathParams(id): PathParams<u64>,
     Mutation { body, key }: Mutation<CaptureHoldRequest>,
 ) -> Result<Response, ApiError> {
-    let operation = state.store.capture(
-        HoldId(id),
-        parse::<AccountAddress>("destination", &body.destination)?,
-        parse_amount("amount", &body.amount)?,
-        body.metadata,
-        key.as_ref(),
-    );
+    let destinations = capture_destinations(&body)?;
+    let operation = state
+        .store
+        .capture_to(HoldId(id), &destinations, body.metadata, key.as_ref());
     respond(&state, StatusCode::OK, key.as_ref(), operation).await
 }
 
@@ -97,6 +96,45 @@ pub async fn void(
 ) -> Result<Response, ApiError> {
     let operation = state.store.void(HoldId(id), body.metadata, key.as_ref());
     respond(&state, StatusCode::OK, key.as_ref(), operation).await
+}
+
+/// The destinations of a capture: either `destination` + `amount`, or `destinations`.
+fn capture_destinations(
+    body: &CaptureHoldRequest,
+) -> Result<Vec<(AccountAddress, u128)>, ApiError> {
+    match (&body.destination, &body.amount, &body.destinations) {
+        (Some(destination), Some(amount), None) => Ok(vec![(
+            parse::<AccountAddress>("destination", destination)?,
+            parse_amount("amount", amount)?,
+        )]),
+        (Some(_), None, None) => Err(ApiError::invalid_field("amount", "is required")),
+        (None, Some(_), None) => Err(ApiError::invalid_field("destination", "is required")),
+        (None, None, Some(destinations)) => destinations
+            .iter()
+            .enumerate()
+            .map(
+                |(
+                    i,
+                    CaptureDestination {
+                        destination,
+                        amount,
+                    },
+                )| {
+                    Ok((
+                        parse::<AccountAddress>(
+                            &format!("destinations[{i}].destination"),
+                            destination,
+                        )?,
+                        parse_amount(&format!("destinations[{i}].amount"), amount)?,
+                    ))
+                },
+            )
+            .collect(),
+        _ => Err(ApiError::invalid_field(
+            "destinations",
+            "give either destination and amount, or destinations",
+        )),
+    }
 }
 
 /// Runs a hold operation under its idempotency key; a replay shows the same hold, as it is now.
