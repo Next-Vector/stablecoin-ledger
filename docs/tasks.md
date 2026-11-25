@@ -20,7 +20,7 @@ Workspace, CI, pre-commit hook, Docker Compose, README. Spec: docs/specification
 
 - [x] Done
 - **Requirements:** NFR-11, §7
-- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64, and the signer crates moved to stablecoin-withdrawer, #65). `#![forbid(unsafe_code)]` in every crate.
+- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64, and the signer crates moved to stablecoin-withdrawer-evm, #65). `#![forbid(unsafe_code)]` in every crate.
 - **Done when:** `cargo build --workspace` and `cargo test --workspace` pass on a clean checkout.
 
 ### 2. CI pipeline: fmt, clippy, test, audit, deny
@@ -281,11 +281,11 @@ The ledger side of deposits: the registries the transaction registry relies on, 
 - **Scope:** drop the empty `chain-watcher`, `withdrawer` and `reconciler` crates; describe them in the docs as external services.
 - **Done when:** the workspace builds and passes without them; the docs no longer present them as ledger components.
 
-### 65. Move signer-proto and signer-local to stablecoin-chain-watcher
+### 65. Move signer-proto and signer-local to stablecoin-watcher-evm
 
 - [x] Done
 - **Requirements:** §7.1
-- **Scope:** drop the empty signer crates; they are built in stablecoin-withdrawer#1. The ledger never signs.
+- **Scope:** drop the empty signer crates; they are built in stablecoin-withdrawer-evm#1. The ledger never signs.
 - **Done when:** the workspace builds and passes without them; the docs place the signer contract outside the ledger.
 
 ### 66. Remove chain event types from ledger webhooks
@@ -334,25 +334,25 @@ The ledger side of deposits: the registries the transaction registry relies on, 
 
 - [x] Done
 - **Requirements:** §3, §7
-- **Scope:** the specification, architecture, README and this list describe the indexers, `stablecoin-tx-registry`, `stablecoin-withdrawer`, the signer and `stablecoin-dev`.
+- **Scope:** the specification, architecture, README and this list describe the indexers, `stablecoin-tx-registry`, `stablecoin-withdrawer-evm`, the signer and `stablecoin-dev`.
 - **Done when:** no single "chain module" is left; every former chain task is mapped to its repository.
 
 ## Moved out of the ledger
 
-The ledger only keeps accounts and stays independent of any chain, so the blockchain tasks moved to private repositories that use this ledger through its API: indexers (`stablecoin-chain-watcher` is the first), `stablecoin-tx-registry` (on-chain transactions and statuses, quorum, postings, reconciliation) and `stablecoin-withdrawer` (nonce, broadcast, signer client). GitHub redirects the old issue links.
+The ledger only keeps accounts and stays independent of any chain, so the blockchain tasks moved to private repositories that use this ledger through its API: indexers (`stablecoin-watcher-evm` is the first), `stablecoin-tx-registry` (on-chain transactions and statuses, quorum, postings, reconciliation) and `stablecoin-withdrawer-evm` (nonce, broadcast, signer client). GitHub redirects the old issue links.
 
 | Former issue | Task | Now in |
 |---|---|---|
-| #30 | Mock USDC contract | stablecoin-chain-watcher#1 |
-| #31 | Report Transfer events with a persistent cursor | stablecoin-chain-watcher#2 |
-| #32 | Report finality and reorgs | stablecoin-chain-watcher#3 |
+| #30 | Mock USDC contract | stablecoin-watcher-evm#1 |
+| #31 | Report Transfer events with a persistent cursor | stablecoin-watcher-evm#2 |
+| #32 | Report finality and reorgs | stablecoin-watcher-evm#3 |
 | #33 | Quorum of independent indexers | stablecoin-tx-registry#1 |
-| #34 | Recognize sweeps and report gas | stablecoin-chain-watcher#5 |
-| #35 | signer-proto, Signer trait, signer-local | stablecoin-withdrawer#1 |
+| #34 | Recognize sweeps and report gas | stablecoin-watcher-evm#5 |
+| #35 | signer-proto, Signer trait, signer-local | stablecoin-withdrawer-evm#1 |
 | #36 | Withdrawal state machine and postings | stablecoin-tx-registry#2 |
-| #37 | Nonce management, broadcast, re-send | stablecoin-withdrawer#2 |
-| #38 | Signed withdrawal orders | stablecoin-withdrawer#3 |
-| #39 | Fault-injection tests for withdrawals | stablecoin-withdrawer#4 |
+| #37 | Nonce management, broadcast, re-send | stablecoin-withdrawer-evm#2 |
+| #38 | Signed withdrawal orders | stablecoin-withdrawer-evm#3 |
+| #39 | Fault-injection tests for withdrawals | stablecoin-withdrawer-evm#4 |
 | #40 | Daily reconciliation | stablecoin-tx-registry#3 |
 | #41 | Mismatch alerts, withdrawal halt, metrics | stablecoin-tx-registry#4 |
 | #43 | One-command demo of the whole system (done: `scripts/demo.sh`) | stablecoin-dev#2 |

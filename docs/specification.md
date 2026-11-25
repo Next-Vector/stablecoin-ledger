@@ -20,8 +20,8 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 |---|---|
 | Public ledger | Journal and internal transfers, holds, balances, webhooks, registries of assets and deposit addresses. No blockchain access of its own |
 | Ledger + indexers + transaction registry (private) | Everything above + deposit indexing from several independent sources, deposit statuses and reconciliation; read-only towards the blockchain, withdrawals are disabled |
-| … + `stablecoin-withdrawer` + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
-| Development and CI | `signer-local` (in `stablecoin-withdrawer`) signs only on local and test networks (anvil, Sepolia); `stablecoin-dev` runs the whole system locally |
+| … + `stablecoin-withdrawer-evm` + paid signing service | Everything above + on-chain withdrawals, issuing deposit addresses and sweeping them with the model that matches the key type, multiple key types (section 7.1) |
+| Development and CI | `signer-local` (in `stablecoin-withdrawer-evm`) signs only on local and test networks (anvil, Sepolia); `stablecoin-dev` runs the whole system locally |
 
 **License:** Business Source License 1.1, converting to Apache-2.0 four years after each release (terms in section 12).
 
@@ -42,7 +42,7 @@ Stablecoin Ledger is a source-available (BSL 1.1) double-entry ledger engine wri
 
 ## 3. Scope
 
-The ledger only keeps accounts and stays independent of any chain. Everything that touches a blockchain lives in private repositories with their own databases, and reaches the ledger only through its REST API like any other client: **indexers** (one repository per kind, several independent instances per network; `stablecoin-chain-watcher` is the first, for EVM) read the chain and report events; the **transaction registry** (`stablecoin-tx-registry`) keeps every on-chain transaction and its status, reaches a quorum across the indexers, posts to the ledger and reconciles; the **withdrawer** (`stablecoin-withdrawer`) sends withdrawals; the **signer** generates addresses and signs. `stablecoin-dev` runs them together locally. The chain side's MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network.
+The ledger only keeps accounts and stays independent of any chain. Everything that touches a blockchain lives in private repositories with their own databases, and reaches the ledger only through its REST API like any other client: **indexers** (one repository per kind, several independent instances per network; `stablecoin-watcher-evm` is the first, for EVM) read the chain and report events; the **transaction registry** (`stablecoin-tx-registry`) keeps every on-chain transaction and its status, reaches a quorum across the indexers, posts to the ledger and reconciles; the **withdrawer** (`stablecoin-withdrawer-evm`) sends withdrawals; the **signer** generates addresses and signs. `stablecoin-dev` runs them together locally. The chain side's MVP covers Ethereum: a local anvil node with a mock ERC-20 token for tests, and Ethereum Sepolia with our own mock USDC as the first real network.
 
 **In the MVP:**
 
@@ -171,7 +171,7 @@ Registration as implemented: the ledger only keeps accounts and stays independen
 
 ### 5.4 Withdrawals
 
-Withdrawals are implemented outside the ledger with its holds and transactions: the transaction registry (private repository `stablecoin-tx-registry`) keeps the state machine and writes the postings, `stablecoin-withdrawer` signs (through the signer) and broadcasts, and the indexers report the on-chain result, matched by `(hot wallet, nonce)` because a re-sent transaction has a new hash. The table below is the posting contract. A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
+Withdrawals are implemented outside the ledger with its holds and transactions: the transaction registry (private repository `stablecoin-tx-registry`) keeps the state machine and writes the postings, `stablecoin-withdrawer-evm` signs (through the signer) and broadcasts, and the indexers report the on-chain result, matched by `(hot wallet, nonce)` because a re-sent transaction has a new hash. The table below is the posting contract. A withdrawal is a finite state machine (**FR-30**); every state transition and its posting are written in a single DB transaction.
 
 | State | Trigger | Journal posting |
 |---|---|---|
@@ -321,9 +321,9 @@ flowchart TB
     client[Client service]
     node["EVM network (several RPC providers / nodes)"]
 
-    idx["indexers × N<br/>(stablecoin-chain-watcher, …)"]
+    idx["indexers × N<br/>(stablecoin-watcher-evm, …)"]
     reg["stablecoin-tx-registry<br/>transactions, statuses, quorum, reconciliation"]
-    wd["stablecoin-withdrawer<br/>nonce, broadcast"]
+    wd["stablecoin-withdrawer-evm<br/>nonce, broadcast"]
     signer["signer<br/>addresses, signing"]
     api["ledger-api<br/>axum, REST, auth"]
 
@@ -356,9 +356,9 @@ stablecoin-ledger/          # public repository
 ├── benches/
 └── .docker/             # integration-test PostgreSQL; the dev stack is in stablecoin-dev
 
-stablecoin-chain-watcher/    # private: EVM indexer (reports events to the registry), mock USDC
+stablecoin-watcher-evm/    # private: EVM indexer (reports events to the registry), mock USDC
 stablecoin-tx-registry/      # private: on-chain transactions and statuses, quorum, ledger postings, reconciliation
-stablecoin-withdrawer/       # private: nonce, broadcast, signer-proto client, signer-local
+stablecoin-withdrawer-evm/       # private: nonce, broadcast, signer-proto client, signer-local
 stablecoin-dev/              # private: docker compose for the whole system
 
 signer/                      # private repository
@@ -384,12 +384,12 @@ signer/                      # private repository
 
 ### 7.1 Transaction signing: paid service (private `signer` repository)
 
-Signing is a paid service from a closed repository. Only `stablecoin-withdrawer` talks to it; the public ledger never signs, never sees private keys and does not depend on the signer at all.
+Signing is a paid service from a closed repository. Only `stablecoin-withdrawer-evm` talks to it; the public ledger never signs, never sees private keys and does not depend on the signer at all.
 
 | Repository | Visibility | Contents |
 |---|---|---|
 | `stablecoin-ledger` | Public | The ledger; no signing code |
-| `stablecoin-withdrawer` | Private | `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
+| `stablecoin-withdrawer-evm` | Private | `signer-proto` (protobuf + generated `tonic` client), the `Signer` trait, `signer-local` for development and CI |
 | `signer` | Private | gRPC server, key backends, deposit address models and sweeping, policy engine, audit log, multi-tenancy, signature metering for billing, deployment manifests |
 
 `signer-local` implements the same gRPC contract, so the withdrawer builds and passes e2e tests without access to the `signer` repository. It refuses to start if its configuration contains a mainnet network.
@@ -407,7 +407,7 @@ Signing is a paid service from a closed repository. Only `stablecoin-withdrawer`
 
 secp256k1 is needed for EVM networks and Tron, ed25519 for Solana (after the MVP). Each key has a logical `key_id` (e.g. `hot/ethereum`) and a version; the backend for a `key_id` is set in the `signer` configuration.
 
-**gRPC contract** (`signer-proto`, in `stablecoin-withdrawer`):
+**gRPC contract** (`signer-proto`, in `stablecoin-withdrawer-evm`):
 
 ```protobuf
 service Signer {
@@ -432,7 +432,7 @@ message SignTransactionResponse {
 
 **Signer requirements:**
 
-- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only `stablecoin-withdrawer` talks to the signer.
+- **SIG-01.** Client authentication: tenant API key + an mTLS certificate issued by the service at onboarding. On the client side only `stablecoin-withdrawer-evm` talks to the signer.
 - **SIG-02.** The withdrawal order (id, network, token, amount, recipient) is signed by the ledger with a separate ed25519 key when the hold is created. The signer rejects requests without a valid order, or with a transaction that does not match it.
 - **SIG-03.** Policies before signing: allowed networks and token contracts, `transfer` calls only, per-transaction and daily limits per `key_id`.
 - **SIG-04.** Idempotency: a repeated request with the same `idempotency_key` returns the same signed transaction; one order cannot be signed twice with different transactions (except a re-send with the same nonce, FR-32).
@@ -622,7 +622,7 @@ Work proceeds in nine sequential stages; each ends with a tagged release and a w
 | 5. Deposit registry | Asset and deposit address registries for the transaction registry | FR-20 | 1 |
 | 8. Polish | Benchmarks, architecture diagrams, demo script, write-up article | NFR-04, NFR-05 | 2 |
 
-Stages 0–4 already make a complete ledger service with webhooks; deposit indexing, withdrawals and reconciliation (formerly stages 5–7) are planned in the private indexer, `stablecoin-tx-registry` and `stablecoin-withdrawer` repositories.
+Stages 0–4 already make a complete ledger service with webhooks; deposit indexing, withdrawals and reconciliation (formerly stages 5–7) are planned in the private indexer, `stablecoin-tx-registry` and `stablecoin-withdrawer-evm` repositories.
 
 The private `signer` repository evolves in parallel on its own plan; the ledger does not depend on it at all, and the withdrawer is tested with `signer-local`.
 
