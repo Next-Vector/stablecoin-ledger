@@ -11,7 +11,7 @@ async fn readiness_is_ok_when_the_database_answers() {
     let url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must point at the run-integration database");
     let pool = PgPool::connect(&url).await.unwrap();
-    let response = app(AppState::new(pool))
+    let response = app(AppState::new(pool, ledger_store::SecretBox::new([9; 32])))
         .oneshot(Request::get("/health/ready").body(Body::empty()).unwrap())
         .await
         .unwrap();

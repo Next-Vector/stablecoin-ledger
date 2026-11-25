@@ -4,8 +4,8 @@ use ledger_core::{AccountAddress, AccountPattern, AssetId, Balance, Metadata, St
 
 use std::convert::Infallible;
 
-use crate::idempotency::{self, IdempotencyKey};
-use crate::{OpError, PgStore, backend};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
+use crate::{OpError, PgStore, backend, events};
 
 /// An account as the API shows it. Accounts exist implicitly from their first posting; a row in
 /// `accounts` (metadata, flags) exists only once something was set on it, e.g. a freeze.
@@ -14,6 +14,8 @@ pub struct Account {
     pub address: AccountAddress,
     pub metadata: Metadata,
     pub frozen: bool,
+    /// A system account (e.g. a gas expense account) that may go negative.
+    pub allow_negative: bool,
     /// One entry per asset the account has ever moved, sorted by asset.
     pub balances: Vec<(AssetId, Balance)>,
 }
@@ -26,8 +28,8 @@ impl PgStore {
         address: &AccountAddress,
         at: Option<TxId>,
     ) -> Result<Option<Account>, StoreError> {
-        let flags: Option<(bool, Vec<String>, Vec<String>)> = sqlx::query_as(
-            "SELECT frozen, \
+        let flags: Option<(bool, bool, Vec<String>, Vec<String>)> = sqlx::query_as(
+            "SELECT frozen, allow_negative, \
                     coalesce((SELECT array_agg(key ORDER BY key) FROM jsonb_each_text(metadata)), '{}'), \
                     coalesce((SELECT array_agg(value ORDER BY key) FROM jsonb_each_text(metadata)), '{}') \
              FROM accounts WHERE address = $1",
@@ -68,11 +70,12 @@ impl PgStore {
             .map_err(backend)?,
         };
 
-        let (frozen, keys, values) = flags.unwrap_or_default();
+        let (frozen, allow_negative, keys, values) = flags.unwrap_or_default();
         Ok(Some(Account {
             address: address.clone(),
             metadata: keys.into_iter().zip(values).collect(),
             frozen,
+            allow_negative,
             balances: parse_balances(rows)?,
         }))
     }
@@ -97,6 +100,25 @@ impl PgStore {
         parse_balances(rows)
     }
 
+    /// Lets a system account (e.g. `platform:gas:ethereum`) go negative, or stops it (§4.3
+    /// rule 2). An operator setting: it writes no event.
+    pub async fn set_allow_negative(
+        &self,
+        address: &AccountAddress,
+        allowed: bool,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO accounts (address, allow_negative) VALUES ($1, $2) \
+             ON CONFLICT (address) DO UPDATE SET allow_negative = EXCLUDED.allow_negative",
+        )
+        .bind(address.as_str())
+        .bind(allowed)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
     /// Freezes or unfreezes an account; a frozen account cannot be a posting source (FR-08).
     /// Works for accounts that have not moved funds yet.
     pub async fn set_frozen(
@@ -106,15 +128,34 @@ impl PgStore {
         key: Option<&IdempotencyKey>,
     ) -> Result<(), OpError<Infallible>> {
         let mut db = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO accounts (address, frozen) VALUES ($1, $2) \
-             ON CONFLICT (address) DO UPDATE SET frozen = EXCLUDED.frozen",
-        )
-        .bind(address.as_str())
-        .bind(frozen)
-        .execute(&mut *db)
-        .await?;
-        idempotency::record(&mut db, key, None, None, None).await?;
+        // Serializes changes to one account even before its row exists, so an event is written
+        // exactly once per real change.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('freeze:' || $1, 0))")
+            .bind(address.as_str())
+            .execute(&mut *db)
+            .await?;
+        let current: Option<(bool,)> =
+            sqlx::query_as("SELECT frozen FROM accounts WHERE address = $1")
+                .bind(address.as_str())
+                .fetch_optional(&mut *db)
+                .await?;
+        if current.map(|(frozen,)| frozen).unwrap_or(false) != frozen {
+            sqlx::query(
+                "INSERT INTO accounts (address, frozen) VALUES ($1, $2) \
+                 ON CONFLICT (address) DO UPDATE SET frozen = EXCLUDED.frozen",
+            )
+            .bind(address.as_str())
+            .bind(frozen)
+            .execute(&mut *db)
+            .await?;
+            events::account_freeze_changed(&mut db, address.as_str(), frozen)
+                .await
+                .map_err(|error| match error {
+                    StoreError::Backend(source) => OpError::Backend(source),
+                    StoreError::Apply(rule) => OpError::Backend(Box::new(rule)),
+                })?;
+        }
+        idempotency::record(&mut db, key, Recorded::default()).await?;
         db.commit().await?;
         Ok(())
     }

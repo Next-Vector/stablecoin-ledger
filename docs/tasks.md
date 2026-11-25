@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Task List
 
-MVP work broken into 9 milestones and 48 tasks, following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
+MVP work broken into 7 milestones and 45 tasks (the blockchain milestones M6 and M7 moved to another repository), following the stages in [specification.md](specification.md) §11. Each task is one commit with tests that prove it; each milestone closes with a PR into `dev`. Each task is a GitHub issue on the [project board](https://github.com/orgs/Next-Vector/projects/16); task numbers are issue numbers, and tasks added during the work are listed with their milestone.
 
 | Milestone | Tasks |
 |---|---|
@@ -9,10 +9,8 @@ MVP work broken into 9 milestones and 48 tasks, following the stages in [specifi
 | [M2 · ledger-store](#m2--ledger-store) | 5 |
 | [M3 · ledger-api + DSL](#m3--ledger-api--dsl) | 9 |
 | [M4 · Webhooks](#m4--webhooks) | 5 |
-| [M5 · chain-watcher](#m5--chain-watcher) | 6 |
-| [M6 · withdrawer](#m6--withdrawer) | 5 |
-| [M7 · reconciler](#m7--reconciler) | 2 |
-| [M8 · Polish](#m8--polish) | 3 |
+| [M5 · deposit registry](#m5--deposit-registry) | 11 |
+| [M8 · Polish](#m8--polish) | 2 |
 
 ## M0 · Scaffold
 
@@ -20,35 +18,35 @@ Workspace, CI, pre-commit hook, Docker Compose, README. Spec: docs/specification
 
 ### 1. Cargo workspace with crate skeletons
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-11, §7
-- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local. `#![forbid(unsafe_code)]` in every crate.
+- **Scope:** Create the Cargo workspace (Rust stable, edition 2024) with empty crates: ledger-core, ledger-script, ledger-store, ledger-api, chain-watcher, withdrawer, reconciler, signer-proto, signer-local (chain-watcher, withdrawer and reconciler were later removed, #64, and the signer crates moved to stablecoin-withdrawer-evm, #65). `#![forbid(unsafe_code)]` in every crate.
 - **Done when:** `cargo build --workspace` and `cargo test --workspace` pass on a clean checkout.
 
 ### 2. CI pipeline: fmt, clippy, test, audit, deny
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-11, NFR-14
 - **Scope:** GitHub Actions on `runs-on: [self-hosted, light]`, one ordered fail-fast job: `cargo fmt --check` → `cargo clippy -D warnings` → `cargo test` → `cargo audit` + `cargo deny`. Runs on push and PR to `dev`/`main`.
 - **Done when:** A PR with a clippy warning or failing test is red; a clean PR is green.
 
 ### 3. Pre-commit hook: fmt, clippy, unit tests
 
-- [ ] Done
+- [x] Done
 - **Requirements:** CLAUDE.md — pre-commit hook
 - **Scope:** Committed hook that blocks a commit on `cargo fmt --check`, `cargo clippy -D warnings` or `cargo test` failure. Heavier suites (integration, e2e) stay in CI.
 - **Done when:** A commit with a formatting error is rejected locally.
 
 ### 4. Docker Compose dev stack: PostgreSQL + anvil
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §3, CLAUDE.md — container conventions
 - **Scope:** `.docker/docker-compose-dev.yml` with PostgreSQL 16 and anvil, `run-dev` wrapper, `.env` + `.env.example` (+ git-ignored `.env.local`). Multi-stage Dockerfile with a `dev` target before the prod target. HTTP services go behind the shared Traefik proxy (`api.stablecoin-ledger.localhost`), no host port for the API.
 - **Done when:** `./run-dev up -d` starts PostgreSQL and anvil; services are reachable.
 
 ### 5. README and LICENSE (BSL 1.1)
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §1, §12
 - **Scope:** Root README: what the project is, how to run locally, link to docs/. LICENSE with BSL 1.1 parameters (Change Date 4 years, Change License Apache-2.0, Additional Use Grant per §12 — pending legal review).
 - **Done when:** README renders on GitHub; LICENSE present.
@@ -59,56 +57,56 @@ Types, validation, in-memory journal, holds, property tests. No I/O. Spec §4, �
 
 ### 6. Account address and asset types with validation
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §4.1, §4.2
 - **Scope:** `AccountAddress` (`[a-z0-9_]+` segments, `:`, ≤ 256 chars), reserved namespaces, `AssetId` (`SYMBOL@network/decimals`). Amounts are `u128` base units; no floats anywhere.
 - **Done when:** Unit tests cover valid/invalid addresses and assets.
 
 ### 7. Posting and Transaction types with checked arithmetic
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-01, NFR-03, §4.3
 - **Scope:** `Posting`, `Transaction` (1..=256 postings), rules 4.3.1–4.3.3. All amount arithmetic via `checked_add`/`checked_sub`; overflow is an error, never a panic.
 - **Done when:** Unit tests for every rule and for overflow.
 
 ### 8. In-memory journal: atomic apply, insufficient funds, frozen accounts
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-01, FR-02, FR-08
 - **Scope:** Apply a transaction atomically; reject with `INSUFFICIENT_FUNDS` if an account without `allow_negative` goes negative; frozen accounts cannot be a source but can receive.
 - **Done when:** Unit tests: partial failure leaves no trace; frozen source rejected; frozen destination credited.
 
 ### 9. Reversals, point-in-time and aggregated balances
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-03, FR-04, FR-05
 - **Scope:** Reverse a transaction once (mirrored postings + reference). Balance per asset now and as of a transaction id. Aggregated balances by pattern (`users:*:wallet`).
 - **Done when:** Unit tests incl. double-reversal rejection.
 
 ### 10. Holds: hold, capture, void, expiry
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-07, §4.4
 - **Scope:** Hold moves funds to `holds:{hold_id}`; partial/full capture returns the remainder; void returns all; expired holds void automatically. Every action is an ordinary transaction.
 - **Done when:** Unit tests for each transition and expiry.
 
 ### 11. Property tests: zero-sum invariant and no negative balances
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §4.3.4, §10
 - **Scope:** `proptest` over random sequences of transfers, reversals and hold operations.
 - **Done when:** 10,000 random operations find no invariant violation.
 
 ### 48. Git hooks: commit-msg, pre-push, auto-enable
 
-- [ ] Done
+- [x] Done
 - **Requirements:** CLAUDE.md commit and branching rules
 - **Scope:** commit-msg enforces `type(scope): summary (#N)`, one body paragraph at most and no `Co-Authored-By`; pre-push refuses pushes to `main` and runs `cargo audit` and `cargo deny`; the first local build sets `core.hooksPath=.githooks` (skipped in CI).
 - **Done when:** `scripts/test-hooks.sh` proves each hook rejects a bad case and accepts a good one; it runs in CI.
 
 ### 49. Dependabot for Cargo, GitHub Actions and Docker images
 
-- [ ] Done
+- [x] Done
 - **Requirements:** CLAUDE.md supply-chain rules
 - **Scope:** weekly updates for `cargo`, `github-actions` and `docker-compose`, PRs into `dev`, minor and patch bumps grouped per ecosystem.
 - **Done when:** `.github/dependabot.yml` validates against the official schema in CI.
@@ -119,35 +117,35 @@ PostgreSQL persistence, migrations, atomicity, concurrency, rebuild. Spec §9, s
 
 ### 12. PostgreSQL schema and migrations
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §9
 - **Scope:** sqlx migrations for transactions, postings, balances, accounts, holds (+ indexes for history queries). Trigger forbidding UPDATE/DELETE on transactions and postings. Amounts `NUMERIC(39,0)`.
 - **Done when:** Integration test (testcontainers) applies migrations and proves UPDATE/DELETE are rejected.
 
 ### 13. Storage trait: atomic apply with materialized balances
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-01, NFR-02, NFR-06
 - **Scope:** Implement the ledger-core storage trait: postings and balance updates in one DB transaction, accounts locked in deterministic (address-sorted) order, O(1) current balance reads.
 - **Done when:** Integration tests: atomicity on failure, no deadlocks under concurrent cross transfers.
 
 ### 14. Concurrency test: 1,000 parallel debits
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-01, §10
 - **Scope:** 1,000 parallel debits of 1 USDC from an account holding 500 USDC.
 - **Done when:** Exactly 500 successes and 500 `INSUFFICIENT_FUNDS`; balance is 0.
 
 ### 15. `ledger rebuild-balances` command
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-08
 - **Scope:** Recompute `balances` entirely from the posting journal.
 - **Done when:** Integration test: corrupt balances, rebuild, values match the journal.
 
 ### 16. Transaction history with filters and cursor pagination
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-06
 - **Scope:** Filter by account, asset, period, metadata; stable cursor pagination with a max page size.
 - **Done when:** Integration tests for each filter and for pagination stability.
@@ -158,63 +156,63 @@ REST API, idempotency, auth, OpenAPI, ledger-script DSL with dry-run. Spec §5.2
 
 ### 17. API skeleton: config validation, error envelope, health, metrics, OpenAPI
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §8, NFR-12, NFR-13
 - **Scope:** axum + tower; config validated at boot (fail fast); single error format `{"error":{code,message,details}}`; `/health`, `/health/ready`, `/metrics`; OpenAPI 3.1 via utoipa; structured JSON logs; graceful shutdown.
 - **Done when:** Integration tests: bad config fails at boot; unknown route returns the error envelope; OpenAPI served.
 
 ### 18. API key authentication with roles
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-09
 - **Scope:** Keys with `read`/`write`/`admin` roles, stored hashed; deny by default.
 - **Done when:** Tests: missing/invalid key → 401, insufficient role → 403.
 
 ### 19. Endpoints: transactions, accounts, balances, holds, freeze
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-01–FR-08, §8
 - **Scope:** Routes from the §8 table for the journal core. Amounts as strings.
 - **Done when:** e2e tests over HTTP for each route, incl. `INSUFFICIENT_FUNDS`.
 
 ### 20. Idempotency-Key on all mutating requests
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-10, FR-11
 - **Scope:** Same key + same body → first result; same key + different body → `409 IDEMPOTENCY_CONFLICT`.
 - **Done when:** Tests: retry creates no second transaction; conflicting body → 409.
 
 ### 21. ledger-script: parser and AST
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-60, FR-61, FR-64
 - **Scope:** Parser (chumsky or hand-written) with line/column/expected-token errors; typed variables; no loops, recursion, network or time; script ≤ 64 KB.
 - **Done when:** Golden tests for every construct; error-message tests.
 
 ### 22. ledger-script: compiler to postings
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-62, FR-63
 - **Scope:** Ordered sources with `max` caps and explicit overdraft; destinations by percentage/fraction + `remaining`; deterministic rounding; ≤ 256 postings.
 - **Done when:** Golden tests + property test: shares always sum to the input.
 
 ### 23. Script endpoints: dry-run and stored scripts
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-65, FR-66
 - **Scope:** `POST /v1/scripts/dry-run`; `POST·GET /v1/scripts`, `GET /v1/scripts/{name}/versions`; `POST /v1/transactions` with `script`/`script_name` + `vars`; script text and vars saved in metadata.
 - **Done when:** e2e tests: dry-run writes nothing; stored script runs by name.
 
 ### 24. DSL fuzzing
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §10
 - **Scope:** cargo-fuzz target for the parser.
 - **Done when:** 1 hour of fuzzing without panics.
 
 ### 56. Docs: sync the task list and schema with the implementation
 
-- [ ] Done
+- [x] Done
 - **Requirements:** —
 - **Scope:** add the tasks created during the work to this list; align the §9 `holds` table in the specification with the migration.
 - **Done when:** this list matches the board and the specification matches the migrations.
@@ -225,141 +223,139 @@ Outbox, delivery worker, retries, HMAC signatures, delivery log. Spec §5.6, sta
 
 ### 25. Webhook subscriptions API and secret rotation
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-50, FR-54
 - **Scope:** CRUD for endpoints (URL, event types, secret, enabled); rotate-secret keeps the old secret valid for 24 h.
 - **Done when:** e2e tests for CRUD and rotation window.
 
 ### 26. Transactional outbox for webhook events
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-51, FR-52, FR-55
 - **Scope:** Write events to `webhook_events` in the same DB transaction as the change; unique id and per-resource `sequence`.
 - **Done when:** Test: killing the process right after commit still delivers the event after restart.
 
 ### 27. webhook-dispatcher: delivery, retries, HMAC signature
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-53, FR-54
 - **Scope:** `SELECT … FOR UPDATE SKIP LOCKED`; POST JSON, 10 s timeout, 2xx success; exponential backoff 30 s → 24 h, ≤ 15 attempts; `X-Ledger-Signature` HMAC-SHA256, `X-Ledger-Event-Id`.
 - **Done when:** wiremock receiver verifies every signature; on 500 delivery is retried on schedule; two dispatchers never double-deliver.
 
 ### 28. Delivery log, manual redelivery, SSRF protection
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-56, FR-57
 - **Scope:** Deliveries endpoint; `POST /v1/webhook-events/{id}/redeliver`; reject private/loopback/link-local URLs in production config.
 - **Done when:** Tests for log content, redelivery and SSRF rejection.
 
 ### 57. Expire overdue holds automatically in PostgreSQL
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-07
 - **Scope:** a periodic job voids holds past `expires_at` as `expired`, each in its own DB transaction with `FOR UPDATE SKIP LOCKED` so replicas can share the work, and emits `hold.expired`.
 - **Done when:** integration tests: a due hold is voided and its funds return; a hold not yet due is untouched; concurrent sweepers void each hold once.
 
-## M5 · chain-watcher
+## M5 · deposit registry
 
-Deposit indexing, finality, reorgs, two RPC sources, sweep recognition. Spec §5.3, stage 5.
+The ledger side of deposits: the registries the transaction registry relies on, plus the ledger operations withdrawals need. Deposit indexing, withdrawals and reconciliation moved to private repositories (see below). Spec §5.3, stage 5.
 
 ### 29. Asset registry and deposit address registration API
 
-- [ ] Done
+- [x] Done
 - **Requirements:** FR-20, §4.2
-- **Scope:** `assets` table (chain id, contract, decimals, finality threshold). `POST /v1/deposit-addresses` registers (network, address) → account; one address per account. The ledger never generates addresses — the model lives in signer (SIG-11).
+- **Scope:** `assets` registry (asset ids only; chain details belong to the chain side). `POST /v1/deposit-addresses` registers (network, address) → wallet account, the address as an opaque string; an address belongs to one account, an account has one address per network. The ledger never generates or watches addresses.
 - **Done when:** e2e tests: register, duplicate address rejected.
 
-### 30. Mock USDC contract for anvil and Sepolia
+### 62. Serve Swagger UI at /api
 
-- [ ] Done
-- **Requirements:** §12 decisions
-- **Scope:** ERC-20 with 6 decimals, `mint`, `blacklist`, `pause`; deployment scripts for anvil and Sepolia.
-- **Done when:** Contract tests; deployed on anvil in the dev stack.
+- [x] Done
+- **Requirements:** NFR-11
+- **Scope:** Swagger UI at the API root `/api`, the raw spec at `/api-json`, both public.
+- **Done when:** `/api` serves Swagger UI loading `/api-json`; README updated.
 
-### 31. Indexer: Transfer events to pending with persistent cursor
+### 64. Remove chain-watcher, withdrawer and reconciler from the ledger
 
-- [ ] Done
-- **Requirements:** FR-12, FR-21, FR-22, FR-25
-- **Scope:** Read `Transfer` events of registered tokens to registered addresses from a stored cursor (number + hash); idempotency key `{chain_id}:{tx_hash}:{log_index}`; seen → `world → users:{id}:pending`.
-- **Done when:** Test: restart at any point causes no double or missed credit.
+- [x] Done
+- **Requirements:** §3, §7
+- **Scope:** drop the empty `chain-watcher`, `withdrawer` and `reconciler` crates; describe them in the docs as external services.
+- **Done when:** the workspace builds and passes without them; the docs no longer present them as ledger components.
 
-### 32. Finality and reorg handling
+### 65. Move signer-proto and signer-local to stablecoin-watcher-evm
 
-- [ ] Done
-- **Requirements:** FR-23, FR-24
-- **Scope:** Promote pending → wallet at the finality threshold (`finalized` tag on Ethereum); keep a window of recent block hashes; reverse FR-22 postings for blocks dropped before finality; `deposit.*` webhooks.
-- **Done when:** anvil reorg test: orphaned deposit is reversed and never reaches wallet.
+- [x] Done
+- **Requirements:** §7.1
+- **Scope:** drop the empty signer crates; they are built in stablecoin-withdrawer-evm#1. The ledger never signs.
+- **Done when:** the workspace builds and passes without them; the docs place the signer contract outside the ledger.
 
-### 33. Two independent RPC sources with cross-check
+### 66. Remove chain event types from ledger webhooks
 
-- [ ] Done
-- **Requirements:** FR-27
-- **Scope:** At least two RPC sources per network. Finalize only when both see the event in a block with the same hash. Hash mismatch or one source down longer than the timeout halts finalization (deposits stay pending) and raises an alert metric.
-- **Done when:** Test with a faulty second source: deposit stays pending and alert fires; after recovery it is finalized exactly once.
+- [x] Done
+- **Requirements:** FR-51
+- **Scope:** remove `deposit.*`, `withdrawal.*` and `reconciliation.mismatch`; a migration strips them from subscriptions and deletes subscriptions left with none.
+- **Done when:** subscribing to a removed type is rejected; the migration keeps the rest of a mixed subscription and deletes a chain-only one.
 
-### 34. Sweep recognition and gas posting
+### 67. List and look up deposit addresses
 
-- [ ] Done
-- **Requirements:** FR-26
-- **Scope:** Recognize `Transfer` from a deposit address to a registered hot wallet as a sweep: no user balance change; post actual gas from the receipt (`platform:gas:{network}` → `world`). Sweep execution itself is out of scope (signer).
-- **Done when:** anvil test: sweep leaves user balances intact and records gas.
+- [x] Done
+- **Requirements:** FR-20
+- **Scope:** `GET /v1/deposit-addresses` (role `read`) with `network`, `address` (exact) and `account` filters and cursor paging.
+- **Done when:** a lookup by network and address finds the account; filters, paging and validation are tested.
 
-## M6 · withdrawer
+### 68. Remove anvil from the ledger dev stack
 
-Withdrawal state machine, nonces, re-send, signer contract, failure tests. Spec §5.4, §7.1, stage 6.
+- [x] Done
+- **Requirements:** §3
+- **Scope:** drop the `anvil` service, `ANVIL_CHAIN_ID` and `ETH_RPC_URL`; the smoke check waits for ledger-api instead.
+- **Done when:** `./run-dev up -d` starts PostgreSQL and ledger-api only, and the smoke check passes.
 
-### 35. signer-proto, Signer trait and signer-local
+### 69. Move the dev stack to stablecoin-dev
 
-- [ ] Done
-- **Requirements:** §7.1, NFR-10
-- **Scope:** Protobuf contract (ListKeys, GetAddress, SignTransaction) + tonic client, `Signer` trait, `signer-local` for anvil/Sepolia that refuses to start with a mainnet network.
-- **Done when:** Tests: signer-local signs on anvil; refuses a mainnet config.
+- [x] Done
+- **Requirements:** NFR-14
+- **Scope:** remove the dev compose, `run-dev` and the smoke check; keep the `Dockerfile` and the integration stack. The whole system runs from the private `stablecoin-dev`.
+- **Done when:** the ledger builds, tests and passes CI without the dev compose; stablecoin-dev runs the ledger.
 
-### 36. Withdrawal state machine and postings
+### 70. Capture a hold to several destinations
 
-- [ ] Done
-- **Requirements:** FR-30, FR-33, FR-34
-- **Scope:** requested → broadcast → confirmed | failed with the §5.4 postings, each transition and posting in one DB transaction. Validate recipient (format + checksum) before the hold. Without a signer: `501 SIGNER_NOT_CONFIGURED`.
-- **Done when:** Tests for every transition and for the 501 path.
+- [x] Done
+- **Requirements:** FR-07, §5.4
+- **Scope:** `capture` takes a list of `{destination, amount}`, the rest returns to the owner; the single-destination form keeps working.
+- **Done when:** a two-destination capture is one transaction; a sum above the hold is rejected.
 
-### 37. Nonce management, broadcast and re-send of stuck transactions
+### 71. System accounts that may go negative
 
-- [ ] Done
-- **Requirements:** FR-31, FR-32
-- **Scope:** Allocate nonces sequentially and persist the signed tx before broadcast; re-send a stuck tx with the same nonce and higher gas; track every attempt's hash.
-- **Done when:** Test: restart never double-broadcasts; stuck tx is replaced.
+- [x] Done
+- **Requirements:** §4.3
+- **Scope:** honour `accounts.allow_negative` in the posting rules; an operator command sets it (e.g. `platform:gas:ethereum`).
+- **Done when:** a flagged account goes negative, an unflagged one is refused; rebuild-balances agrees.
 
-### 38. Signed withdrawal orders
+### 72. Describe the tx registry, indexers and withdrawer in the docs
 
-- [ ] Done
-- **Requirements:** SIG-02
-- **Scope:** Ledger signs the withdrawal order (id, network, token, amount, recipient) with an ed25519 key at hold creation and passes it to the signer.
-- **Done when:** Tests: signer-local rejects a missing or mismatching order.
+- [x] Done
+- **Requirements:** §3, §7
+- **Scope:** the specification, architecture, README and this list describe the indexers, `stablecoin-tx-registry`, `stablecoin-withdrawer-evm`, the signer and `stablecoin-dev`.
+- **Done when:** no single "chain module" is left; every former chain task is mapped to its repository.
 
-### 39. Fault-injection tests for withdrawals
+## Moved out of the ledger
 
-- [ ] Done
-- **Requirements:** NFR-07, §10
-- **Scope:** Kill the process at every withdrawal step and restart.
-- **Done when:** No lost or duplicated funds, no double broadcast at any step.
+The ledger only keeps accounts and stays independent of any chain, so the blockchain tasks moved to private repositories that use this ledger through its API: indexers (`stablecoin-watcher-evm` is the first), `stablecoin-tx-registry` (on-chain transactions and statuses, quorum, postings, reconciliation) and `stablecoin-withdrawer-evm` (nonce, broadcast, signer client). GitHub redirects the old issue links.
 
-## M7 · reconciler
-
-Daily reconciliation, alerts, metrics. Spec §5.5, stage 7.
-
-### 40. Daily reconciliation job and results storage
-
-- [ ] Done
-- **Requirements:** FR-40, FR-41, FR-27
-- **Scope:** Once a day (default 00:00 UTC, configurable) check Σ on-chain (finalized block, both RPC sources) = −balance(world) − Σ pending per asset; store time, block, expected, actual, difference; `GET /v1/reconciliations`.
-- **Done when:** e2e: after deposits, transfers and withdrawals the difference is 0.
-
-### 41. Mismatch alerts, withdrawal halt, metrics and tracing
-
-- [ ] Done
-- **Requirements:** FR-42, NFR-12, NFR-13
-- **Scope:** Difference ≠ 0 → alert metric, `reconciliation.mismatch` webhook, optional halt of withdrawals for that asset. Prometheus metrics (tx/s, latency, indexer lag, reconciliation difference) and OpenTelemetry tracing.
-- **Done when:** Test: injected mismatch fires the alert and halts withdrawals when configured.
+| Former issue | Task | Now in |
+|---|---|---|
+| #30 | Mock USDC contract | stablecoin-watcher-evm#1 |
+| #31 | Report Transfer events with a persistent cursor | stablecoin-watcher-evm#2 |
+| #32 | Report finality and reorgs | stablecoin-watcher-evm#3 |
+| #33 | Quorum of independent indexers | stablecoin-tx-registry#1 |
+| #34 | Recognize sweeps and report gas | stablecoin-watcher-evm#5 |
+| #35 | signer-proto, Signer trait, signer-local | stablecoin-withdrawer-evm#1 |
+| #36 | Withdrawal state machine and postings | stablecoin-tx-registry#2 |
+| #37 | Nonce management, broadcast, re-send | stablecoin-withdrawer-evm#2 |
+| #38 | Signed withdrawal orders | stablecoin-withdrawer-evm#3 |
+| #39 | Fault-injection tests for withdrawals | stablecoin-withdrawer-evm#4 |
+| #40 | Daily reconciliation | stablecoin-tx-registry#3 |
+| #41 | Mismatch alerts, withdrawal halt, metrics | stablecoin-tx-registry#4 |
+| #43 | One-command demo of the whole system (done: `scripts/demo.sh`) | stablecoin-dev#2 |
 
 ## M8 · Polish
 
@@ -367,21 +363,14 @@ Benchmarks, demo, diagrams, write-up. Spec stage 8.
 
 ### 42. Benchmarks for throughput and latency
 
-- [ ] Done
+- [x] Done
 - **Requirements:** NFR-04, NFR-05
 - **Scope:** criterion + k6/oha: ≥ 2,000 transfers/s on one PostgreSQL (8 vCPU); p99 `POST /transactions` < 50 ms at 50% of peak.
 - **Done when:** Results published in the README.
 
-### 43. One-command demo with docker compose
-
-- [ ] Done
-- **Requirements:** §10
-- **Scope:** `docker compose up` brings up the whole system and runs a demo script (deposit, transfer, withdrawal, reconciliation).
-- **Done when:** Demo runs end to end on a clean machine.
-
 ### 44. Architecture diagrams and write-up article
 
-- [ ] Done
+- [x] Done
 - **Requirements:** §11 stage 8
 - **Scope:** Final diagrams in docs/ and an article explaining the design decisions.
 - **Done when:** Published in docs/.

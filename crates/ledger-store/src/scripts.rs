@@ -11,8 +11,8 @@ use ledger_core::{ApplyError, BalanceChange, Metadata, Transaction, TxId, plan};
 use ledger_script::ast::Script;
 use ledger_script::{CompileError, ParseError, Vars};
 
-use crate::idempotency::{self, IdempotencyKey};
-use crate::{OpError, PgStore, apply_in, backend, frozen_accounts, read_balances, tx_id};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
+use crate::{OpError, PgStore, apply_in, backend, read_balances, source_flags, tx_id};
 
 /// A version of a stored script.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +91,15 @@ impl PgStore {
         .bind(source)
         .fetch_one(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, None, None, Some((name, row.1))).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                script: Some((name, row.1)),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         stored(row).map_err(|error| OpError::Backend(Box::new(error)))
     }
@@ -200,7 +208,15 @@ impl PgStore {
         let balances = read_balances(&mut db, &keys, true).await?;
         let tx = compile(script, vars, &balances, audit)?;
         let id = apply_in(&mut db, &tx, None).await?;
-        idempotency::record(&mut db, key, Some(id), None, None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok(tx_id(id)?)
     }
@@ -221,11 +237,12 @@ impl PgStore {
             .iter()
             .map(|p| p.source().to_string())
             .collect();
-        let frozen = frozen_accounts(&mut db, &sources, false).await?;
+        let flags = source_flags(&mut db, &sources, false).await?;
         let balances = plan(
             &transaction,
             |account, asset| current(&balances, account, asset),
-            |account| frozen.contains(account.as_str()),
+            |account| flags.frozen.contains(account.as_str()),
+            |account| flags.negative_allowed.contains(account.as_str()),
         )
         .map_err(|error| OpError::Rejected(error.into()))?;
         Ok(DryRun {

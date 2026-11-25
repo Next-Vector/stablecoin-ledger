@@ -6,8 +6,8 @@ use ledger_core::{
 };
 use sqlx::PgConnection;
 
-use crate::idempotency::{self, IdempotencyKey};
-use crate::{OpError, PgStore, apply_in, backend, tx_id};
+use crate::idempotency::{self, IdempotencyKey, Recorded};
+use crate::{OpError, PgStore, apply_in, backend, events, tx_id};
 
 type HoldRow = (String, String, String, String, Option<i64>, i64);
 
@@ -50,7 +50,16 @@ impl PgStore {
         .bind(expires_at.map(i64::try_from).transpose().map_err(backend)?)
         .execute(&mut *db)
         .await?;
-        idempotency::record(&mut db, key, Some(reserved), Some(id), None).await?;
+        idempotency::record(
+            &mut db,
+            key,
+            Recorded {
+                transaction: Some(reserved),
+                hold: Some(id),
+                ..Recorded::default()
+            },
+        )
+        .await?;
         db.commit().await?;
         Ok((hold, tx_id(reserved)?))
     }
@@ -65,6 +74,19 @@ impl PgStore {
         metadata: Metadata,
         key: Option<&IdempotencyKey>,
     ) -> Result<(Hold, TxId), OpError<HoldError>> {
+        self.capture_to(id, &[(destination, amount)], metadata, key)
+            .await
+    }
+
+    /// Sends each amount of an active hold to its destination (together ≤ the held amount) and
+    /// returns the rest to the owner, in one transaction.
+    pub async fn capture_to(
+        &self,
+        id: HoldId,
+        destinations: &[(AccountAddress, u128)],
+        metadata: Metadata,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<(Hold, TxId), OpError<HoldError>> {
         let mut db = self.pool.begin().await?;
         let (hold, now) = load_hold(&mut db, id, true)
             .await?
@@ -76,7 +98,7 @@ impl PgStore {
             )));
         }
         let capture = hold
-            .capture(destination, amount, metadata)
+            .capture_to(destinations, metadata)
             .map_err(OpError::Rejected)?;
         let settled = settle(&mut db, hold, &capture, HoldStatus::Captured, key).await?;
         db.commit().await?;
@@ -98,6 +120,50 @@ impl PgStore {
         let settled = settle(&mut db, hold, &release, HoldStatus::Voided, key).await?;
         db.commit().await?;
         Ok(settled)
+    }
+
+    /// Voids up to `limit` active holds whose deadline has passed as `expired`, returning their
+    /// funds to the owners, and returns their ids. Each hold settles in its own DB transaction
+    /// with its `hold.expired` event; a hold another sweeper is settling is skipped, so any
+    /// number of sweepers can run at once.
+    pub async fn expire_due_holds(&self, limit: u32) -> Result<Vec<HoldId>, StoreError> {
+        let mut expired = Vec::new();
+        while expired.len() < limit as usize {
+            match self.expire_next_hold().await? {
+                Some(id) => expired.push(id),
+                None => break,
+            }
+        }
+        Ok(expired)
+    }
+
+    async fn expire_next_hold(&self) -> Result<Option<HoldId>, StoreError> {
+        let mut db = self.pool.begin().await.map_err(backend)?;
+        let due: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM holds WHERE status = 'active' AND expires_at <= now() \
+             ORDER BY expires_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+        )
+        .fetch_optional(&mut *db)
+        .await
+        .map_err(backend)?;
+        let Some((id,)) = due else {
+            return Ok(None);
+        };
+        let id = HoldId(u64::try_from(id).map_err(backend)?);
+        let (hold, _) = load_hold(&mut db, id, false)
+            .await?
+            .ok_or_else(|| backend(HoldError::NotFound(id)))?;
+        let release = hold.release(Metadata::new()).map_err(backend)?;
+        let released = apply_in(&mut db, &release, None).await?;
+        sqlx::query("UPDATE holds SET status = $2 WHERE id = $1")
+            .bind(i64::try_from(id.0).map_err(backend)?)
+            .bind(HoldStatus::Expired.as_str())
+            .execute(&mut *db)
+            .await
+            .map_err(backend)?;
+        events::hold_expired(&mut db, id, released).await?;
+        db.commit().await.map_err(backend)?;
+        Ok(Some(id))
     }
 
     /// A hold in its current state, or `None` if it does not exist.
@@ -156,7 +222,16 @@ async fn settle(
         .execute(&mut *db)
         .await?;
     let hold_id = i64::try_from(hold.id().0).map_err(backend)?;
-    idempotency::record(db, key, Some(settled), Some(hold_id), None).await?;
+    idempotency::record(
+        db,
+        key,
+        Recorded {
+            transaction: Some(settled),
+            hold: Some(hold_id),
+            ..Recorded::default()
+        },
+    )
+    .await?;
     let hold = Hold::new(
         hold.id(),
         hold.owner().clone(),

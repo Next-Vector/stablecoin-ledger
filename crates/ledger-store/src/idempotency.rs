@@ -45,6 +45,18 @@ pub struct Resources {
     pub hold: Option<HoldId>,
     /// A registered script version: name and version.
     pub script: Option<(String, u32)>,
+    pub webhook: Option<u64>,
+    pub deposit_address: Option<u64>,
+}
+
+/// What a write records next to its key (database ids).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Recorded<'a> {
+    pub transaction: Option<i64>,
+    pub hold: Option<i64>,
+    pub script: Option<(&'a str, i32)>,
+    pub webhook: Option<i64>,
+    pub deposit_address: Option<i64>,
 }
 
 /// What a key means for an incoming request.
@@ -66,16 +78,28 @@ impl PgStore {
             Option<i64>,
             Option<String>,
             Option<i32>,
+            Option<i64>,
+            Option<i64>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT request_hash, transaction_id, hold_id, script_name, script_version \
+            "SELECT request_hash, transaction_id, hold_id, script_name, script_version, webhook_id, \
+                    deposit_address_id \
              FROM idempotency_keys WHERE key = $1",
         )
         .bind(&key.key)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?;
-        let Some((request_hash, transaction, hold, script_name, script_version)) = row else {
+        let Some((
+            request_hash,
+            transaction,
+            hold,
+            script_name,
+            script_version,
+            webhook,
+            deposit_address,
+        )) = row
+        else {
             return Ok(KeyStatus::New);
         };
         if request_hash != key.request_hash {
@@ -91,6 +115,12 @@ impl PgStore {
                 .map(|id| u64::try_from(id).map(HoldId).map_err(backend))
                 .transpose()?,
             script,
+            webhook: webhook
+                .map(|id| u64::try_from(id).map_err(backend))
+                .transpose()?,
+            deposit_address: deposit_address
+                .map(|id| u64::try_from(id).map_err(backend))
+                .transpose()?,
         }))
     }
 }
@@ -101,24 +131,25 @@ impl PgStore {
 pub(crate) async fn record<E>(
     db: &mut PgConnection,
     key: Option<&IdempotencyKey>,
-    transaction: Option<i64>,
-    hold: Option<i64>,
-    script: Option<(&str, i32)>,
+    recorded: Recorded<'_>,
 ) -> Result<(), OpError<E>> {
     let Some(key) = key else {
         return Ok(());
     };
     let result = sqlx::query(
         "INSERT INTO idempotency_keys \
-         (key, request_hash, transaction_id, hold_id, script_name, script_version) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         (key, request_hash, transaction_id, hold_id, script_name, script_version, webhook_id, \
+          deposit_address_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&key.key)
     .bind(key.request_hash.as_slice())
-    .bind(transaction)
-    .bind(hold)
-    .bind(script.map(|(name, _)| name))
-    .bind(script.map(|(_, version)| version))
+    .bind(recorded.transaction)
+    .bind(recorded.hold)
+    .bind(recorded.script.map(|(name, _)| name))
+    .bind(recorded.script.map(|(_, version)| version))
+    .bind(recorded.webhook)
+    .bind(recorded.deposit_address)
     .execute(db)
     .await;
     match result {

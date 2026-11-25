@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use ledger_core::{ApplyError, HoldError, RevertError, StoreError};
 use ledger_script::{CompileError, ParseError};
-use ledger_store::{OpError, RegisterError, ScriptError};
+use ledger_store::{DepositAddressError, OpError, RegisterError, ScriptError, WebhookError};
 use serde::Serialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
@@ -148,6 +148,9 @@ impl From<HoldError> for ApiError {
             )
             .with_details(json!({ "requested": requested.to_string(), "held": held.to_string() })),
             HoldError::ZeroAmount => Self::invalid_field("amount", "must be greater than zero"),
+            HoldError::NoDestinations | HoldError::TooManyDestinations(_) => {
+                Self::invalid_field("destinations", message)
+            }
             HoldError::Posting(posting) => Self::validation(posting.to_string()),
             HoldError::Apply(rule) => rule.into(),
         }
@@ -204,6 +207,41 @@ impl From<RegisterError> for ApiError {
         match error {
             RegisterError::InvalidName => Self::invalid_field("name", error),
             RegisterError::Invalid(parse) => script_invalid(&parse),
+        }
+    }
+}
+
+impl From<WebhookError> for ApiError {
+    fn from(error: WebhookError) -> Self {
+        match error {
+            WebhookError::NotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "WEBHOOK_NOT_FOUND",
+                "no webhook subscription has this id",
+            ),
+            WebhookError::EventNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "WEBHOOK_EVENT_NOT_FOUND",
+                "no webhook event has this id",
+            ),
+        }
+    }
+}
+
+impl From<DepositAddressError> for ApiError {
+    fn from(error: DepositAddressError) -> Self {
+        let message = error.to_string();
+        match error {
+            DepositAddressError::UnknownNetwork(network) => {
+                Self::new(StatusCode::UNPROCESSABLE_ENTITY, "UNKNOWN_NETWORK", message)
+                    .with_details(json!({ "network": network }))
+            }
+            DepositAddressError::AddressTaken(_) => {
+                Self::new(StatusCode::CONFLICT, "DEPOSIT_ADDRESS_TAKEN", message)
+            }
+            DepositAddressError::AccountHasAddress(_) => {
+                Self::new(StatusCode::CONFLICT, "ACCOUNT_HAS_DEPOSIT_ADDRESS", message)
+            }
         }
     }
 }

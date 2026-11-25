@@ -71,6 +71,9 @@ pub struct Hold {
 }
 
 impl Hold {
+    /// Destinations of one capture; with the owner's remainder a transaction holds 256 postings.
+    pub const MAX_CAPTURE_DESTINATIONS: usize = 255;
+
     /// A hold of `amount` (> 0) of `asset` reserved from `owner`, in the given state.
     pub fn new(
         id: HoldId,
@@ -149,31 +152,57 @@ impl Hold {
         amount: u128,
         metadata: Metadata,
     ) -> Result<Transaction, HoldError> {
+        self.capture_to(&[(destination, amount)], metadata)
+    }
+
+    /// The transaction that sends each amount to its destination (together ≤ the held amount)
+    /// and returns the rest to the owner, e.g. a withdrawal's amount in flight and its fee.
+    pub fn capture_to(
+        &self,
+        destinations: &[(AccountAddress, u128)],
+        metadata: Metadata,
+    ) -> Result<Transaction, HoldError> {
         self.ensure_active()?;
-        if amount == 0 {
+        if destinations.is_empty() {
+            return Err(HoldError::NoDestinations);
+        }
+        if destinations.len() > Self::MAX_CAPTURE_DESTINATIONS {
+            return Err(HoldError::TooManyDestinations(destinations.len()));
+        }
+        if destinations.iter().any(|(_, amount)| *amount == 0) {
             return Err(HoldError::ZeroAmount);
         }
-        if amount > self.amount {
-            return Err(HoldError::ExceedsHold {
-                requested: amount,
-                held: self.amount,
-            });
+        let exceeds = |requested| HoldError::ExceedsHold {
+            requested,
+            held: self.amount,
+        };
+        let captured = destinations
+            .iter()
+            .try_fold(0u128, |sum, (_, amount)| sum.checked_add(*amount))
+            .ok_or_else(|| exceeds(u128::MAX))?;
+        if captured > self.amount {
+            return Err(exceeds(captured));
         }
-        let mut postings = vec![Posting::new(
-            self.account(),
-            destination,
-            amount,
-            self.asset.clone(),
-        )?];
-        if amount < self.amount {
+        let mut postings = destinations
+            .iter()
+            .map(|(destination, amount)| {
+                Posting::new(
+                    self.account(),
+                    destination.clone(),
+                    *amount,
+                    self.asset.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if captured < self.amount {
             postings.push(Posting::new(
                 self.account(),
                 self.owner.clone(),
-                self.amount - amount,
+                self.amount - captured,
                 self.asset.clone(),
             )?);
         }
-        Ok(Transaction::new(postings, metadata).expect("one or two postings"))
+        Ok(Transaction::new(postings, metadata).expect("1 to 256 postings"))
     }
 
     /// The transaction that returns the whole held amount to the owner (void or expiry).
@@ -204,6 +233,10 @@ pub enum HoldError {
     NotActive(HoldId, HoldStatus),
     #[error("hold amount must be greater than zero")]
     ZeroAmount,
+    #[error("a capture needs at least one destination")]
+    NoDestinations,
+    #[error("a capture has {0} destinations; at most {max} are allowed", max = Hold::MAX_CAPTURE_DESTINATIONS)]
+    TooManyDestinations(usize),
     #[error("capture of {requested} exceeds the held {held}")]
     ExceedsHold { requested: u128, held: u128 },
     #[error("invalid posting: {0}")]
@@ -238,7 +271,18 @@ impl Journal {
         amount: u128,
         metadata: Metadata,
     ) -> Result<TxId, HoldError> {
-        let tx = self.find_hold(id)?.capture(destination, amount, metadata)?;
+        self.capture_to(id, &[(destination, amount)], metadata)
+    }
+
+    /// Sends each amount to its destination (together ≤ the held amount) and returns the rest to
+    /// the owner, in one transaction.
+    pub fn capture_to(
+        &mut self,
+        id: HoldId,
+        destinations: &[(AccountAddress, u128)],
+        metadata: Metadata,
+    ) -> Result<TxId, HoldError> {
+        let tx = self.find_hold(id)?.capture_to(destinations, metadata)?;
         let tx_id = self.apply(tx)?;
         self.set_status(id, HoldStatus::Captured);
         Ok(tx_id)
@@ -428,6 +472,95 @@ mod tests {
         assert_eq!(
             journal.capture(id, account("merchants:7:wallet"), 0, Metadata::new()),
             Err(HoldError::ZeroAmount)
+        );
+        assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Active);
+    }
+
+    #[test]
+    fn a_capture_splits_between_destinations_in_one_transaction() {
+        // A withdrawal: the amount goes in flight, the fee to the platform, the rest back.
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        let tx = journal
+            .capture_to(
+                id,
+                &[
+                    (account("chain:ethereum:in_flight"), 25),
+                    (account("platform:fees"), 1),
+                ],
+                Metadata::new(),
+            )
+            .unwrap();
+
+        let postings = journal.transaction(tx).unwrap().postings();
+        let moved: Vec<(String, u128)> = postings
+            .iter()
+            .map(|p| (p.destination().to_string(), p.amount()))
+            .collect();
+        assert_eq!(
+            moved,
+            [
+                ("chain:ethereum:in_flight".to_owned(), 25),
+                ("platform:fees".to_owned(), 1),
+                ("users:1:wallet".to_owned(), 4),
+            ]
+        );
+        assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Captured);
+        assert_eq!(balance(&journal, "users:1:wallet"), amount(74));
+        assert_eq!(
+            journal.balance(&journal.get_hold(id).unwrap().account(), &usdc()),
+            Balance::ZERO
+        );
+    }
+
+    #[test]
+    fn a_split_capture_is_checked_as_a_whole() {
+        let mut journal = funded();
+        let id = journal
+            .hold(account("users:1:wallet"), 30, usdc(), None, Metadata::new())
+            .unwrap();
+        let fees = account("platform:fees");
+        let flight = account("chain:ethereum:in_flight");
+        assert_eq!(
+            journal.capture_to(
+                id,
+                &[(flight.clone(), 25), (fees.clone(), 6)],
+                Metadata::new()
+            ),
+            Err(HoldError::ExceedsHold {
+                requested: 31,
+                held: 30
+            })
+        );
+        assert_eq!(
+            journal.capture_to(
+                id,
+                &[(flight.clone(), 25), (fees.clone(), 0)],
+                Metadata::new()
+            ),
+            Err(HoldError::ZeroAmount)
+        );
+        assert_eq!(
+            journal.capture_to(
+                id,
+                &[(flight.clone(), u128::MAX), (fees.clone(), 1)],
+                Metadata::new()
+            ),
+            Err(HoldError::ExceedsHold {
+                requested: u128::MAX,
+                held: 30
+            })
+        );
+        assert_eq!(
+            journal.capture_to(id, &[], Metadata::new()),
+            Err(HoldError::NoDestinations)
+        );
+        let too_many: Vec<_> = (0..256).map(|_| (fees.clone(), 1)).collect();
+        assert_eq!(
+            journal.capture_to(id, &too_many, Metadata::new()),
+            Err(HoldError::TooManyDestinations(256))
         );
         assert_eq!(journal.get_hold(id).unwrap().status(), HoldStatus::Active);
     }

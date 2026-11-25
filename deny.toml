@@ -5,7 +5,9 @@
 all-features = true
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
+# ISC (rustls, aws-lc-rs, webpki) is MIT-equivalent; CDLA-Permissive-2.0 covers the bundled CA
+# root certificates (webpki-root-certs). Both come with the TLS stack of the webhook client.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause", "ISC", "CDLA-Permissive-2.0"]
 # Workspace crates are BUSL-1.1 and never published; do not license-check them.
 private = { ignore = true }
 

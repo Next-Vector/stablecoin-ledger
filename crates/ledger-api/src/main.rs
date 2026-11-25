@@ -5,19 +5,27 @@
 //!   ledger-api rebuild-balances                          recompute balances from the journal (NFR-08)
 //!   ledger-api create-api-key --role <role> --name <n>   issue an API key (read | write | admin)
 //!   ledger-api revoke-api-key <key_id>                   revoke an API key
+//!   ledger-api register-asset --asset <id>               add an asset to the registry (§4.2)
+//!   ledger-api allow-negative <account>                  let a system account go negative (§4.3)
+//!   ledger-api disallow-negative <account>               stop it
 //!
 //! Configuration comes from the environment and is validated before anything starts.
 
 use std::process::ExitCode;
 
 use ledger_api::config::{Config, LogFormat};
+use ledger_api::dispatcher::{Dispatcher, DispatcherConfig};
+use ledger_api::expiry::HoldSweeper;
 use ledger_api::{AppState, app};
-use ledger_store::Role;
+use ledger_core::{AccountAddress, AssetId};
+use ledger_store::{PgStore, Role};
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage: ledger-api [serve | migrate | rebuild-balances | \
-create-api-key --role <read|write|admin> --name <name> | revoke-api-key <key_id>]";
+create-api-key --role <read|write|admin> --name <name> | revoke-api-key <key_id> | \
+register-asset --asset <SYMBOL@network/decimals> | allow-negative <account> | disallow-negative <account>]";
 
 type Failure = Box<dyn std::error::Error>;
 
@@ -26,8 +34,20 @@ enum Command {
     Serve,
     Migrate,
     RebuildBalances,
-    CreateApiKey { role: Role, name: String },
-    RevokeApiKey { key_id: String },
+    CreateApiKey {
+        role: Role,
+        name: String,
+    },
+    RevokeApiKey {
+        key_id: String,
+    },
+    RegisterAsset {
+        asset: AssetId,
+    },
+    AllowNegative {
+        account: AccountAddress,
+        allowed: bool,
+    },
 }
 
 impl Command {
@@ -54,6 +74,15 @@ impl Command {
                     name: name?,
                 })
             }
+            ["register-asset", "--asset", asset] => Some(Self::RegisterAsset {
+                asset: asset.parse().ok()?,
+            }),
+            [command @ ("allow-negative" | "disallow-negative"), account] => {
+                Some(Self::AllowNegative {
+                    account: account.parse().ok()?,
+                    allowed: *command == "allow-negative",
+                })
+            }
             _ => None,
         }
     }
@@ -65,6 +94,9 @@ impl Command {
             Self::RebuildBalances => "rebuild-balances",
             Self::CreateApiKey { .. } => "create-api-key",
             Self::RevokeApiKey { .. } => "revoke-api-key",
+            Self::RegisterAsset { .. } => "register-asset",
+            Self::AllowNegative { allowed: true, .. } => "allow-negative",
+            Self::AllowNegative { allowed: false, .. } => "disallow-negative",
         }
     }
 }
@@ -93,6 +125,10 @@ async fn main() -> ExitCode {
         Command::RebuildBalances => rebuild_balances(&config).await,
         Command::CreateApiKey { role, name } => create_api_key(&config, role, &name).await,
         Command::RevokeApiKey { key_id } => revoke_api_key(&config, &key_id).await,
+        Command::RegisterAsset { asset } => register_asset(&config, &asset).await,
+        Command::AllowNegative { account, allowed } => {
+            allow_negative(&config, &account, allowed).await
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -114,13 +150,38 @@ fn init_tracing(format: LogFormat) {
 }
 
 async fn serve(config: &Config) -> Result<(), Failure> {
-    let pool = PgPool::connect(&config.database_url).await?;
-    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    tracing::info!(addr = %config.bind_addr, "listening");
-    axum::serve(listener, app(AppState::new(pool.clone())))
-        .with_graceful_shutdown(shutdown_signal())
+    let pool = PgPoolOptions::new()
+        .max_connections(config.database_max_connections)
+        .connect(&config.database_url)
         .await?;
-    // In-flight requests have finished; release the database connections.
+    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let dispatcher = Dispatcher::new(
+        pool.clone(),
+        config.webhook_secrets.clone(),
+        DispatcherConfig {
+            url_policy: config.webhook_url_policy,
+            ..DispatcherConfig::default()
+        },
+    )?;
+    let dispatching = tokio::spawn(dispatcher.run(stopped.clone()));
+    let sweeping =
+        tokio::spawn(HoldSweeper::new(pool.clone(), config.hold_expiry_interval).run(stopped));
+    tracing::info!(addr = %config.bind_addr, "listening");
+    axum::serve(
+        listener,
+        app(AppState::new(pool.clone(), config.webhook_secrets.clone())
+            .with_url_policy(config.webhook_url_policy)),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        stop.send(true).ok();
+    })
+    .await?;
+    // In-flight requests and the current dispatch and expiry rounds have finished; release the
+    // connections.
+    dispatching.await.ok();
+    sweeping.await.ok();
     pool.close().await;
     tracing::info!("stopped");
     Ok(())
@@ -158,6 +219,32 @@ async fn revoke_api_key(config: &Config, key_id: &str) -> Result<(), Failure> {
     }
     tracing::info!(key_id, "API key revoked");
     println!("revoked API key {key_id}");
+    Ok(())
+}
+
+async fn register_asset(config: &Config, asset: &AssetId) -> Result<(), Failure> {
+    let pool = PgPool::connect(&config.database_url).await?;
+    PgStore::new(pool).register_asset(asset).await?;
+    tracing::info!(%asset, "asset registered");
+    println!("registered {asset}");
+    Ok(())
+}
+
+async fn allow_negative(
+    config: &Config,
+    account: &AccountAddress,
+    allowed: bool,
+) -> Result<(), Failure> {
+    let pool = PgPool::connect(&config.database_url).await?;
+    PgStore::new(pool)
+        .set_allow_negative(account, allowed)
+        .await?;
+    tracing::info!(%account, allowed, "allow_negative changed");
+    if allowed {
+        println!("{account} may now go negative");
+    } else {
+        println!("{account} may no longer go negative");
+    }
     Ok(())
 }
 

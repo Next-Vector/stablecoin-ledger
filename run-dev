@@ -1,7 +1,0 @@
-#!/bin/bash
-touch ./.env.local
-set -a
-source ./.env
-source ./.env.local
-set +a
-docker compose -p stablecoin-ledger -f .docker/docker-compose-dev.yml ${@}

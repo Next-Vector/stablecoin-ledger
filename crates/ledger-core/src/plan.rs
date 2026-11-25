@@ -17,11 +17,13 @@ pub struct BalanceChange {
 /// `(account, asset)`, sorted by account then asset — the order stores lock rows in.
 ///
 /// Rules: a frozen account cannot be a source; overflow rejects the transaction; after all
-/// postings, no account except `world` may be negative (checked on the net result).
+/// postings, no account may be negative except `world` and accounts flagged by
+/// `may_go_negative` (system accounts such as gas expenses; checked on the net result).
 pub fn plan(
     tx: &Transaction,
     current: impl Fn(&AccountAddress, &AssetId) -> Balance,
     is_frozen: impl Fn(&AccountAddress) -> bool,
+    may_go_negative: impl Fn(&AccountAddress) -> bool,
 ) -> Result<Vec<BalanceChange>, ApplyError> {
     let mut staged: BTreeMap<(AccountAddress, AssetId), Balance> = BTreeMap::new();
     for posting in tx.postings() {
@@ -36,10 +38,9 @@ pub fn plan(
         staged.insert(destination, credited);
     }
 
-    if let Some(((account, asset), _)) = staged
-        .iter()
-        .find(|((account, _), balance)| balance.is_negative() && !allows_negative(account))
-    {
+    if let Some(((account, asset), _)) = staged.iter().find(|((account, _), balance)| {
+        balance.is_negative() && !account.is_world() && !may_go_negative(account)
+    }) {
         return Err(ApplyError::InsufficientFunds {
             account: account.clone(),
             asset: asset.clone(),
@@ -65,12 +66,6 @@ fn staged_balance(
         .get(key)
         .copied()
         .unwrap_or_else(|| current(&key.0, &key.1))
-}
-
-/// Only `world` may go negative for now; system accounts with `allow_negative` come with
-/// the features that need them (e.g. gas accounting).
-fn allows_negative(account: &AccountAddress) -> bool {
-    account.is_world()
 }
 
 #[cfg(test)]
@@ -122,6 +117,43 @@ mod tests {
         false
     }
 
+    /// No account besides `world` is flagged to go negative.
+    fn only_world(_: &AccountAddress) -> bool {
+        false
+    }
+
+    #[test]
+    fn a_flagged_system_account_may_go_negative() {
+        // Gas is spent from the platform's own account: an expense, so it goes negative.
+        let gas = |a: &AccountAddress| a.as_str() == "platform:gas:ethereum";
+        let changes = plan(
+            &tx(&[("platform:gas:ethereum", "world", 7)]),
+            funded(&[]),
+            not_frozen,
+            gas,
+        )
+        .unwrap();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.account.as_str() == "platform:gas:ethereum" && c.balance == balance(-7))
+        );
+
+        let unflagged = plan(
+            &tx(&[("platform:fees", "world", 7)]),
+            funded(&[]),
+            not_frozen,
+            gas,
+        );
+        assert_eq!(
+            unflagged,
+            Err(ApplyError::InsufficientFunds {
+                account: account("platform:fees"),
+                asset: usdc()
+            })
+        );
+    }
+
     #[test]
     fn returns_the_new_balance_of_every_touched_account_sorted_by_key() {
         let changes = plan(
@@ -131,6 +163,7 @@ mod tests {
             ]),
             funded(&[("users:1:wallet", 100), ("merchants:7:wallet", 5)]),
             not_frozen,
+            only_world,
         )
         .unwrap();
 
@@ -157,6 +190,7 @@ mod tests {
             ]),
             funded(&[]),
             not_frozen,
+            only_world,
         )
         .unwrap();
         assert!(
@@ -172,6 +206,7 @@ mod tests {
             &tx(&[("users:1:wallet", "users:2:wallet", 101)]),
             funded(&[("users:1:wallet", 100)]),
             not_frozen,
+            only_world,
         );
         assert_eq!(
             result,
@@ -189,6 +224,7 @@ mod tests {
             &tx(&[("users:1:wallet", "users:2:wallet", 1)]),
             funded(&[("users:1:wallet", 10)]),
             frozen,
+            only_world,
         );
         assert_eq!(
             result,
@@ -199,6 +235,7 @@ mod tests {
             &tx(&[("users:2:wallet", "users:1:wallet", 1)]),
             funded(&[("users:2:wallet", 10)]),
             frozen,
+            only_world,
         );
         assert!(incoming.is_ok());
     }
@@ -212,6 +249,7 @@ mod tests {
             ]),
             funded(&[]),
             not_frozen,
+            only_world,
         );
         assert_eq!(
             result,
@@ -228,6 +266,7 @@ mod tests {
             &tx(&[("world", "users:1:wallet", 1)]),
             funded(&[("users:1:wallet", i128::MAX)]),
             not_frozen,
+            only_world,
         );
         assert!(result.is_ok());
         let full = |a: &AccountAddress, _: &AssetId| {
@@ -238,7 +277,12 @@ mod tests {
             }
         };
         assert_eq!(
-            plan(&tx(&[("world", "users:1:wallet", 1)]), full, not_frozen),
+            plan(
+                &tx(&[("world", "users:1:wallet", 1)]),
+                full,
+                not_frozen,
+                only_world
+            ),
             Err(ApplyError::Overflow)
         );
     }
