@@ -1,6 +1,6 @@
 # Stablecoin Ledger — Architecture
 
-Every movement of money is a posting in a double-entry journal, and only `ledger-core` can write one: no service touches the journal tables directly. The ledger only keeps accounts and is independent of any chain; everything on-chain lives in private repositories with their own databases — the indexers, the transaction registry (`stablecoin-tx-registry`), the withdrawer (`stablecoin-withdrawer`) and the signer — and reaches the ledger only through its REST API. `stablecoin-dev` runs the whole system locally. This document explains how the parts fit together; the normative requirements (FR/NFR/SIG ids) live in [specification.md](specification.md).
+Every movement of money is a posting in a double-entry journal, and only `ledger-core` can write one: no service touches the journal tables directly. The ledger only keeps accounts and is independent of any chain; everything on-chain lives in private repositories with their own databases — the indexers, the transaction registry (`stablecoin-tx-registry`), the withdrawer (`stablecoin-withdrawer-evm`) and the signer — and reaches the ledger only through its REST API. `stablecoin-dev` runs the whole system locally. This document explains how the parts fit together; the normative requirements (FR/NFR/SIG ids) live in [specification.md](specification.md).
 
 ## Components
 
@@ -8,9 +8,9 @@ Every movement of money is a posting in a double-entry journal, and only `ledger
 flowchart TB
     client[Client service]
     net["EVM network<br/>several RPC providers / nodes"]
-    idx["indexers × N (private repos)<br/>stablecoin-chain-watcher, …"]
+    idx["indexers × N (private repos)<br/>stablecoin-watcher-evm, …"]
     reg["stablecoin-tx-registry (private)<br/>transactions, statuses, quorum, reconciliation"]
-    wd["stablecoin-withdrawer (private)<br/>nonce, broadcast"]
+    wd["stablecoin-withdrawer-evm (private)<br/>nonce, broadcast"]
     signer["signer (private repo)<br/>keys, address generation, signing"]
 
     subgraph ledger [stablecoin-ledger]
@@ -198,7 +198,7 @@ flowchart LR
     subgraph public [Public repo — stablecoin-ledger]
         ledger[ledger-api]
     end
-    subgraph chainside [Private repos — indexers, stablecoin-tx-registry, stablecoin-withdrawer]
+    subgraph chainside [Private repos — indexers, stablecoin-tx-registry, stablecoin-withdrawer-evm]
         reg[tx-registry]
         wd[withdrawer]
         local[signer-local<br/>testnets only]

@@ -74,9 +74,9 @@ Delivery is at-least-once: receivers deduplicate by event id and order within a 
 
 The first design had the chain indexer, the withdrawal sender and reconciliation inside this repository. They are gone. The ledger keeps accounts; everything on chain is a separate service with its own database that talks to the ledger only through its API:
 
-- **Indexers** — one repository per kind (`stablecoin-chain-watcher` is the first, for EVM), several independent instances per network on different RPC providers — read the chain and report events.
+- **Indexers** — one repository per kind (`stablecoin-watcher-evm` is the first, for EVM), several independent instances per network on different RPC providers — read the chain and report events.
 - **The transaction registry** (`stablecoin-tx-registry`) stores every on-chain transaction and its status, acts only when a quorum of indexers agrees on an event and its block hash, posts the result to the ledger, and reconciles daily.
-- **The withdrawer** (`stablecoin-withdrawer`) manages nonces and broadcasts; it is the only service that talks to the signer.
+- **The withdrawer** (`stablecoin-withdrawer-evm`) manages nonces and broadcasts; it is the only service that talks to the signer.
 - **The signer** generates deposit addresses and signs, in its own private repository.
 
 Why split it: a ledger that cannot reach a chain cannot be tricked by one. A single compromised or buggy indexer can never move money, because the registry needs agreement from independent sources. Withdrawal confirmations come from the same indexers, matched by `(hot wallet, nonce)` because a re-sent transaction has a new hash, and an outgoing transfer that matches no withdrawal raises an alert. The ledger is also usable on its own — internal transfers, holds and webhooks — for systems that have no blockchain at all.
